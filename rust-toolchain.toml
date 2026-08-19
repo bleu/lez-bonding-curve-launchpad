@@ -1,0 +1,4 @@
+# Matches logos-execution-zone v0.2.0, the pinned LEZ revision.
+[toolchain]
+channel = "1.94.0"
+profile = "default"
