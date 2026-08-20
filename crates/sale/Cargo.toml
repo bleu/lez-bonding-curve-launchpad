@@ -1,0 +1,15 @@
+[package]
+name = "sale"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+# `curve-math` and `borsh` only. No `lee_core`: the state machine must stay
+# testable without account fixtures or a sequencer.
+[dependencies]
+borsh.workspace = true
+curve-math.workspace = true
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+arithmetic_side_effects = "deny"

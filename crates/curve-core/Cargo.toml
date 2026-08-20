@@ -1,0 +1,23 @@
+[package]
+name = "curve-core"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+# Where `lee_core` enters. The guest at `methods/guest/src/bin/curve.rs` path-depends
+# on this crate from its own workspace, so every dependency here is also compiled for
+# `riscv32im-risc0-zkvm-elf`. Keep it free of host-only features.
+[dependencies]
+borsh.workspace = true
+lee_core.workspace = true
+risc0-zkvm.workspace = true
+sale.workspace = true
+serde.workspace = true
+
+# Adapter-level tests live here rather than in the guest crate, which the root
+# workspace excludes and `cargo test --workspace` therefore never reaches.
+[dev-dependencies]
+lee = { workspace = true, features = ["test-utils"] }
+
+[lints]
+workspace = true

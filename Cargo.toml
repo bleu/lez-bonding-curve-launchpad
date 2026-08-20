@@ -8,21 +8,42 @@ license = "MIT OR Apache-2.0"
 # toolchain and its own `[profile.release]`. `lgs build` compiles it separately.
 [workspace]
 resolver = "3"
-members = ["."]
+members = [".", "crates/*", "cli"]
 exclude = ["methods", "methods/guest"]
 
 [workspace.dependencies]
 lee = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a" }
-lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a", features = ["host"] }
+# No `host` feature here. `crates/curve-core` inherits this entry, and workspace
+# inheritance resolves against curve-core's own workspace even when the excluded
+# guest crate is the one depending on it — so `host` would pull ml-kem and
+# getrandom into the riscv32 build. LEZ declares it the same way for the same
+# reason; on the host side `lee` already enables it.
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a" }
 wallet = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a" }
 common = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a" }
 sequencer_service_rpc = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a", default-features = false, features = ["client"] }
+
+curve-math = { path = "crates/curve-math" }
+sale = { path = "crates/sale" }
+curve-core = { path = "crates/curve-core" }
+launchpad-client = { path = "crates/launchpad-client" }
+
 anyhow = "1"
+borsh = { version = "1.8", features = ["derive"] }
+clap = { version = "4", features = ["derive"] }
+risc0-zkvm = { version = "3.0.5", default-features = false, features = ["std"] }
+serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+
+[lints]
+workspace = true
+
 [dependencies]
+launchpad-client.workspace = true
 lee.workspace = true
-lee_core.workspace = true
 wallet.workspace = true
 common.workspace = true
 sequencer_service_rpc.workspace = true

@@ -12,11 +12,11 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use common::transaction::LeeTransaction;
+use launchpad_client::{load_program, parse_account_id};
 use lee::{
     PublicTransaction,
     public_transaction::{Message, WitnessSet},
 };
-use lez_bonding_curve_launchpad::runner_support::{load_program, parse_account_id};
 use sequencer_service_rpc::RpcClient as _;
 use wallet::WalletCore;
 
@@ -76,13 +76,8 @@ async fn main() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("querying nonces: {e:?}"))?;
     let signing_keys = [signing_key];
 
-    let message = Message::try_new(
-        program.id(),
-        vec![account_id],
-        nonces,
-        payload.into_bytes(),
-    )
-    .map_err(|e| anyhow::anyhow!("building message: {e:?}"))?;
+    let message = Message::try_new(program.id(), vec![account_id], nonces, payload.into_bytes())
+        .map_err(|e| anyhow::anyhow!("building message: {e:?}"))?;
     let witness_set = WitnessSet::for_message(&message, &signing_keys);
     let tx = PublicTransaction::new(message, witness_set);
 

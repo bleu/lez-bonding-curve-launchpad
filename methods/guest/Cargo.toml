@@ -10,6 +10,13 @@ license = "MIT OR Apache-2.0"
 lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a", default-features = false }
 risc0-zkvm = { version = "3.0.5", default-features = false, features = ["std"] }
 
+# Declared before it is used. This crate is its own workspace with its own lock, so
+# nothing else proves that `curve-core` and everything under it compile for
+# `riscv32im-risc0-zkvm-elf`. Cargo compiles declared dependencies whether they are
+# referenced or not, which turns a host-feature leak into a build failure here instead
+# of a surprise in GTM-509. The `curve.rs` shim that uses it lands in GTM-509.
+curve-core = { path = "../../crates/curve-core" }
+
 # Part of program identity: the risc0 image ID is computed over the
 # release-stripped binary, so every build that must reproduce a program id has
 # to use this exact profile. Matches the lez-programs convention.
