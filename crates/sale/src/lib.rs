@@ -42,6 +42,9 @@ pub enum CreateError {
     VirtualReserveAboveBound,
     /// A sale with nothing to dispense can never complete.
     SaleReserveZero,
+    /// A zero `Vc` makes `k` zero, which prices the whole virtual token
+    /// reserve at nothing.
+    VirtualCollateralReserveZero,
 }
 
 /// Both virtual reserves stay below 2^64 so `k = Vt * Vc` always fits u128.
@@ -65,6 +68,9 @@ impl Sale {
         }
         if sale_reserve == 0 {
             return Err(CreateError::SaleReserveZero);
+        }
+        if virtual_collateral_reserve == 0 {
+            return Err(CreateError::VirtualCollateralReserveZero);
         }
         if virtual_token_reserve <= sale_reserve {
             return Err(CreateError::VirtualTokenReserveNotAboveSaleReserve);
@@ -132,6 +138,16 @@ mod tests {
             Err(CreateError::VirtualReserveAboveBound)
         );
         assert!(Sale::create(TOKEN, COLLATERAL, 800, 0, (1 << 64) - 1, (1 << 64) - 1).is_ok());
+    }
+
+    #[test]
+    fn create_requires_a_virtual_collateral_reserve_to_price_the_curve() {
+        // Vc = 0 fixes k = 0, and k = 0 quotes the whole virtual token
+        // reserve for any collateral at all.
+        assert_eq!(
+            Sale::create(TOKEN, COLLATERAL, 800, 200, 1000, 0),
+            Err(CreateError::VirtualCollateralReserveZero)
+        );
     }
 
     #[test]
