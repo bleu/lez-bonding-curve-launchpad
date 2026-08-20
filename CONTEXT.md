@@ -23,8 +23,10 @@ A sale is not a pool. The sale reserve is not liquidity. Those two AMM-generic w
 - Manual close — the creator ending a sale that will not reach its supply target.
 - Unlock policy — whether the creator's own allocation is redeemable immediately or only after close.
 - Graduation — moving a completed sale's tokens and collateral into a DEX. Out of scope; the live path is manual withdrawal.
-- Treasury — the account protocol fees are transferred to, in the same transaction as the trade.
+- Treasury — the owner protocol fees are transferred to, in the same transaction as the trade. The receiving account is the treasury's ATA for the sale's collateral.
 - Admin authority — the key allowed to update the fee rate and the treasury address.
+- Config — the singleton PDA holding the fee rate, the treasury owner, and the admin key. Created and replaced whole by `update_config`, read live by every trade. See `docs/adr/0003`.
+- Genesis admin — the admin key compiled into `curve-core`, gating only the config's first write. Part of the risc0 image ID.
 - ATA — an associated token account, derived from an owner and a token definition. Reserves are ATAs owned by the sale PDA; participant balances are ATAs owned by the participant.
 - Factory — the program that mints a token with a fixed supply, publishes the split, and tail-calls into the curve to open the sale. The reason sold-back can never exceed bought.
 - Curve — the program that runs a sale over any token pair handed to it. The RFP deliverable.
