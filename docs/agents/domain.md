@@ -20,12 +20,19 @@ This is a single-context repo.
 /
 ├── CONTEXT.md
 ├── docs/adr/
-│   ├── 0001-u128-bounds-on-virtual-reserves.md
-│   └── 0002-guarantee-lives-in-the-factory.md
-├── program/
+│   ├── 0001-pin-lez-v0.2.0-and-spel-v0.6.0.md
+│   └── 0002-repo-layout-and-guest-shim.md
+├── crates/
+│   ├── curve-math/
+│   ├── sale/
+│   ├── curve-core/
+│   └── launchpad-client/
 ├── cli/
+├── methods/guest/src/bin/
 └── verify/
 ```
+
+`CONTEXT.md` carries the crate map as well as the glossary. Read it for which crate owns what.
 
 There is no `CONTEXT-MAP.md`. The curve program, the factory program, and the CLI
 share one vocabulary, so splitting them would duplicate the glossary rather than
@@ -51,4 +58,4 @@ it for `/grill-with-docs`).
 If your output contradicts an existing ADR, surface it explicitly rather than
 silently overriding:
 
-> _Contradicts ADR-0002 (the guarantee lives in the factory) — but worth reopening because…_
+> _Contradicts ADR-0002 (handlers live in the host workspace) — but worth reopening because…_
