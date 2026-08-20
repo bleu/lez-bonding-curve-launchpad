@@ -1,0 +1,35 @@
+name: ci
+
+# Deliberately fast. `curve-math` has no dependencies and `sale` has two, so this job
+# compiles no LEZ code and cannot fail on a network fetch. That is also where every
+# correctness claim in the proposal lives. The full host build and the risc0 guest build
+# stay a local `lgs build` concern; putting them here would mean a 20-minute cache-sensitive
+# job to babysit during a one-week sprint.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml pins 1.94.0 with profile "default", which carries rustfmt
+      # and clippy, so rustup installs what the steps below need.
+      - run: cargo --version
+
+      - name: format
+        run: |
+          cargo fmt --all --check
+          cargo fmt --manifest-path methods/guest/Cargo.toml --check
+
+      - name: clippy
+        run: cargo clippy --locked -p curve-math -p sale --all-targets
+
+      - name: test
+        run: cargo test --locked -p curve-math -p sale
+
+      - name: pins
+        run: ./verify/check-pins.sh
