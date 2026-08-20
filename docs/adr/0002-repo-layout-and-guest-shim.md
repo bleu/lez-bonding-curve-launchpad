@@ -36,7 +36,7 @@ Stay on scaffold's `default` template rather than `lez-framework`. The framework
 
 ## Consequences
 
-`Sale` lives in `crates/sale` and `Data` comes from `lee_core`, so `impl TryFrom<&Data> for Sale` is blocked by the orphan rule. `curve-core` reads state through a free function calling borsh's `try_from_slice` instead of the upstream `TryFrom` impl. This is a small, deliberate divergence from in-tree style.
+`Sale` lives in `crates/sale` and holds only what pricing and solvency need. `curve-core` wraps it in `SaleAccount` next to the token pair ids and serialises that into the sale PDA. `SaleAccount` is local to `curve-core`, so the account data conversions follow the in-tree `TryFrom<&Data>` and `From<&SaleAccount>` style with no orphan-rule workaround.
 
 `runner_support` moved from the root package into `crates/launchpad-client`, and `src/bin/run_deploy_probe.rs` calls it there. The root `src/lib.rs` is gone. The `lez-template` skill identifies a default-template project partly by that file existing, so identification now rests on `scaffold.toml` and `methods/guest/src/bin/`. Nothing in `lgs` itself requires the root lib: `build` runs `cargo build --workspace`, and `deploy` only globs the guest directory.
 

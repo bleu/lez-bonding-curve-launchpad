@@ -10,14 +10,11 @@
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
-/// One token launch on a bonding curve. Borsh-serialised into the sale PDA.
-///
-/// Token pair ids are raw 32-byte values rather than `lee_core::AccountId`,
-/// which keeps this crate chain-free. `curve-core` owns the conversion.
+/// One token launch on a bonding curve: what pricing and solvency need,
+/// and nothing chain-shaped. `curve-core` nests it in `SaleAccount` next
+/// to the token pair ids and serialises that into the sale PDA.
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct Sale {
-    pub token_definition_id: [u8; 32],
-    pub collateral_definition_id: [u8; 32],
     /// Virtual token reserve `Vt`. Pricing only; mutable.
     pub virtual_token_reserve: u128,
     /// Virtual collateral reserve `Vc`. Pricing only; mutable.
@@ -54,8 +51,6 @@ pub const VIRTUAL_RESERVE_BOUND: u128 = 1 << 64;
 impl Sale {
     /// Opens a sale. Fixes `k = Vt * Vc` for its whole life.
     pub fn create(
-        token_definition_id: [u8; 32],
-        collateral_definition_id: [u8; 32],
         sale_reserve: u128,
         dex_seed_reserve: u128,
         virtual_token_reserve: u128,
@@ -79,8 +74,6 @@ impl Sale {
             .checked_mul(virtual_collateral_reserve)
             .expect("both virtual reserves are below 2^64, so the product fits u128");
         Ok(Self {
-            token_definition_id,
-            collateral_definition_id,
             virtual_token_reserve,
             virtual_collateral_reserve,
             k,
@@ -96,14 +89,9 @@ impl Sale {
 mod tests {
     use super::*;
 
-    const TOKEN: [u8; 32] = [1; 32];
-    const COLLATERAL: [u8; 32] = [2; 32];
-
     #[test]
     fn create_fixes_k_from_the_virtual_reserves_and_opens_the_sale() {
-        let sale = Sale::create(TOKEN, COLLATERAL, 800, 200, 1000, 100).expect("valid sale");
-        assert_eq!(sale.token_definition_id, TOKEN);
-        assert_eq!(sale.collateral_definition_id, COLLATERAL);
+        let sale = Sale::create(800, 200, 1000, 100).expect("valid sale");
         assert_eq!(sale.sale_reserve, 800);
         assert_eq!(sale.dex_seed_reserve, 200);
         assert_eq!(sale.virtual_token_reserve, 1000);
@@ -117,11 +105,11 @@ mod tests {
     fn create_requires_the_virtual_token_reserve_to_exceed_the_sale_reserve() {
         // F2. At Vt == D the final buy would need Vc to reach infinity.
         assert_eq!(
-            Sale::create(TOKEN, COLLATERAL, 1000, 0, 1000, 100),
+            Sale::create(1000, 0, 1000, 100),
             Err(CreateError::VirtualTokenReserveNotAboveSaleReserve)
         );
         assert_eq!(
-            Sale::create(TOKEN, COLLATERAL, 1001, 0, 1000, 100),
+            Sale::create(1001, 0, 1000, 100),
             Err(CreateError::VirtualTokenReserveNotAboveSaleReserve)
         );
     }
@@ -130,14 +118,14 @@ mod tests {
     fn create_bounds_both_virtual_reserves_below_two_to_the_64() {
         // The overflow argument in docs/adr/0004 rests on this bound.
         assert_eq!(
-            Sale::create(TOKEN, COLLATERAL, 800, 0, 1 << 64, 100),
+            Sale::create(800, 0, 1 << 64, 100),
             Err(CreateError::VirtualReserveAboveBound)
         );
         assert_eq!(
-            Sale::create(TOKEN, COLLATERAL, 800, 0, 1000, 1 << 64),
+            Sale::create(800, 0, 1000, 1 << 64),
             Err(CreateError::VirtualReserveAboveBound)
         );
-        assert!(Sale::create(TOKEN, COLLATERAL, 800, 0, (1 << 64) - 1, (1 << 64) - 1).is_ok());
+        assert!(Sale::create(800, 0, (1 << 64) - 1, (1 << 64) - 1).is_ok());
     }
 
     #[test]
@@ -145,7 +133,7 @@ mod tests {
         // Vc = 0 fixes k = 0, and k = 0 quotes the whole virtual token
         // reserve for any collateral at all.
         assert_eq!(
-            Sale::create(TOKEN, COLLATERAL, 800, 200, 1000, 0),
+            Sale::create(800, 200, 1000, 0),
             Err(CreateError::VirtualCollateralReserveZero)
         );
     }
@@ -153,14 +141,14 @@ mod tests {
     #[test]
     fn create_requires_a_sale_reserve_to_dispense() {
         assert_eq!(
-            Sale::create(TOKEN, COLLATERAL, 0, 200, 1000, 100),
+            Sale::create(0, 200, 1000, 100),
             Err(CreateError::SaleReserveZero)
         );
     }
 
     #[test]
     fn a_sale_survives_a_borsh_round_trip() {
-        let sale = Sale::create(TOKEN, COLLATERAL, 800, 200, 1000, 100).expect("valid sale");
+        let sale = Sale::create(800, 200, 1000, 100).expect("valid sale");
         let bytes = borsh::to_vec(&sale).expect("sale serialises");
         assert_eq!(Sale::try_from_slice(&bytes).expect("bytes parse"), sale);
     }

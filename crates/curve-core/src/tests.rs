@@ -9,8 +9,8 @@ use lee_core::{
 use sale::Sale;
 
 use crate::{
-    Config, GENESIS_ADMIN, Instruction, compute_config_pda, compute_config_pda_seed,
-    sale_from_data, sale_to_data, update_config::update_config,
+    Config, GENESIS_ADMIN, Instruction, SaleAccount, compute_config_pda, compute_config_pda_seed,
+    update_config::update_config,
 };
 
 const CURVE_PROGRAM_ID: ProgramId = [7; 8];
@@ -239,9 +239,16 @@ fn first_update_config_initializes_the_config() {
 
 #[test]
 fn sale_state_round_trips_through_account_data() {
-    let sale = Sale::create([1; 32], [2; 32], 800, 200, 1000, 100).expect("valid sale");
-    let data = sale_to_data(&sale);
-    assert_eq!(sale_from_data(&data).expect("data parses"), sale);
+    let sale_account = SaleAccount {
+        token_definition_id: AccountId::new([1; 32]),
+        collateral_definition_id: AccountId::new([2; 32]),
+        sale: Sale::create(800, 200, 1000, 100).expect("valid sale"),
+    };
+    let data = Data::from(&sale_account);
+    assert_eq!(
+        SaleAccount::try_from(&data).expect("data parses"),
+        sale_account
+    );
 }
 
 #[test]

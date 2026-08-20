@@ -8,10 +8,6 @@
 //! The handlers stay shallow. They deserialize accounts, call `sale`, and translate the
 //! returned outcome into account post-states and chained calls. No decisions here.
 //!
-//! One consequence of `Sale` living in the `sale` crate: `impl TryFrom<&Data> for Sale`
-//! is blocked by the orphan rule, both types being foreign. Read the state through a free
-//! function calling borsh's `try_from_slice` instead of the upstream `TryFrom` impl.
-//!
 //! The sale handlers arrive with GTM-509 onward, which also adds the guest shim and
 //! deletes `deploy_probe`.
 
@@ -118,15 +114,30 @@ pub fn compute_config_pda_seed() -> PdaSeed {
     PdaSeed::new(bytes)
 }
 
-/// Reads a [`Sale`] out of the sale PDA's data.
-pub fn sale_from_data(data: &Data) -> std::io::Result<Sale> {
-    Sale::try_from_slice(data.as_ref())
+/// The sale PDA's whole contents: the token pair the sale runs over, and the
+/// [`Sale`] state machine that prices it.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct SaleAccount {
+    pub token_definition_id: AccountId,
+    pub collateral_definition_id: AccountId,
+    pub sale: Sale,
 }
 
-/// Serialises a [`Sale`] into account data.
-#[must_use]
-pub fn sale_to_data(sale: &Sale) -> Data {
-    let mut bytes = Vec::with_capacity(std::mem::size_of_val(sale));
-    BorshSerialize::serialize(sale, &mut bytes).expect("serialisation to a Vec cannot fail");
-    Data::try_from(bytes).expect("a sale is far below the account data size limit")
+impl TryFrom<&Data> for SaleAccount {
+    type Error = std::io::Error;
+
+    fn try_from(data: &Data) -> Result<Self, Self::Error> {
+        Self::try_from_slice(data.as_ref())
+    }
+}
+
+impl From<&SaleAccount> for Data {
+    fn from(sale_account: &SaleAccount) -> Self {
+        let mut bytes = Vec::with_capacity(std::mem::size_of_val(sale_account));
+
+        BorshSerialize::serialize(sale_account, &mut bytes)
+            .expect("serialisation to a Vec cannot fail");
+
+        Self::try_from(bytes).expect("a sale account is far below the account data size limit")
+    }
 }
