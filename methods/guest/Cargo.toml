@@ -1,0 +1,18 @@
+[package]
+name = "launchpad_programs"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace]
+
+[dependencies]
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a", default-features = false }
+risc0-zkvm = { version = "3.0.5", default-features = false, features = ["std"] }
+
+# Part of program identity: the risc0 image ID is computed over the
+# release-stripped binary, so every build that must reproduce a program id has
+# to use this exact profile. Matches the lez-programs convention.
+[profile.release]
+debug = 0
+strip = "symbols"
