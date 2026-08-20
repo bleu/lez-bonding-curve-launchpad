@@ -28,7 +28,9 @@ fn main() {
         let mut account = pre_state.account.clone();
         let mut bytes = account.data.into_inner();
         bytes.extend_from_slice(&payload);
-        account.data = bytes.try_into().expect("payload exceeds account data limit");
+        account.data = bytes
+            .try_into()
+            .expect("payload exceeds account data limit");
         account
     };
 
