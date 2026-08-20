@@ -48,7 +48,7 @@ pub enum CreateError {
 }
 
 /// Both virtual reserves stay below 2^64 so `k = Vt * Vc` always fits u128.
-/// The full argument is `docs/adr/0003`.
+/// The full argument is `docs/adr/0004`.
 pub const VIRTUAL_RESERVE_BOUND: u128 = 1 << 64;
 
 impl Sale {
@@ -128,7 +128,7 @@ mod tests {
 
     #[test]
     fn create_bounds_both_virtual_reserves_below_two_to_the_64() {
-        // The overflow argument in docs/adr/0003 rests on this bound.
+        // The overflow argument in docs/adr/0004 rests on this bound.
         assert_eq!(
             Sale::create(TOKEN, COLLATERAL, 800, 0, 1 << 64, 100),
             Err(CreateError::VirtualReserveAboveBound)

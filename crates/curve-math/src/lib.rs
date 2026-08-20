@@ -5,13 +5,13 @@
 //! direction at every call site is visible at the call rather than inferred from
 //! context.
 //!
-//! The u128 bound argument lives in `docs/adr/0003`.
+//! The u128 bound argument lives in `docs/adr/0004`.
 
 /// Why a pricing call could not produce a number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MathError {
     /// An intermediate operation left u128. Unreachable for states created
-    /// under the ADR 0003 bounds; kept because this crate checks everything.
+    /// under the ADR 0004 bounds; kept because this crate checks everything.
     Overflow,
     /// The trade asks for more than the virtual reserves back.
     ExceedsVirtualReserves,

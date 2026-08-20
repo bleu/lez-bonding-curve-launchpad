@@ -1,4 +1,4 @@
-# 0003 — Bound the virtual reserves below 2^64 so the curve arithmetic stays in u128
+# 0004 — Bound the virtual reserves below 2^64 so the curve arithmetic stays in u128
 
 Status: accepted
 

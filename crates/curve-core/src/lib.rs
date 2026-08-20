@@ -12,19 +12,37 @@
 //! is blocked by the orphan rule, both types being foreign. Read the state through a free
 //! function calling borsh's `try_from_slice` instead of the upstream `TryFrom` impl.
 //!
-//! The handlers arrive with GTM-509 onward, which also adds the guest shim and
+//! The sale handlers arrive with GTM-509 onward, which also adds the guest shim and
 //! deletes `deploy_probe`.
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use lee_core::account::Data;
-use lee_core::program::ProgramId;
+use lee_core::{
+    account::{AccountId, Data},
+    program::{PdaSeed, ProgramId},
+};
 use sale::Sale;
 use serde::{Deserialize, Serialize};
 
-/// Curve program instruction. The account lists are settled by the issue that
-/// implements each handler; GTM-516 adds the `UpdateConfig` variant.
+pub mod update_config;
+
+#[cfg(test)]
+mod tests;
+
+/// Curve program instruction. The account lists of the sale variants are settled
+/// by the issue that implements each handler.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Instruction {
+    /// Creates the config PDA on the first call, replaces it whole after.
+    ///
+    /// Required accounts:
+    /// - Config PDA
+    /// - Authority (authorized): the genesis admin on the first call, the stored
+    ///   admin after
+    UpdateConfig {
+        admin: AccountId,
+        fee_bps: u16,
+        treasury: AccountId,
+    },
     /// Opens a sale over the token pair handed to it. Handler: GTM-509.
     CreateSale {
         sale_reserve: u128,
@@ -52,6 +70,54 @@ pub enum Instruction {
     Withdraw,
 }
 
+/// The admin key allowed to initialize the config. Compiled in, so it is part of the
+/// risc0 image ID: changing it is a different program, and it cannot be front-run.
+/// Replace with the operator's key before deploying. See the README, "Admin authority".
+pub const GENESIS_ADMIN: AccountId = AccountId::new([0xAD; 32]);
+
+/// The fee denominator. A `fee_bps` above this would make `amount - fee` underflow,
+/// so `update_config` rejects it. Any tighter cap is the operator's call, not ours.
+pub const MAX_FEE_BPS: u16 = 10_000;
+
+/// The protocol settings: one singleton PDA per deployment, read live by every trade.
+/// Created and replaced whole by `update_config`. See `docs/adr/0003`.
+#[derive(Clone, Default, BorshSerialize, BorshDeserialize)]
+pub struct Config {
+    pub admin: AccountId,
+    pub fee_bps: u16,
+    pub treasury: AccountId,
+}
+
+impl TryFrom<&Data> for Config {
+    type Error = std::io::Error;
+
+    fn try_from(data: &Data) -> Result<Self, Self::Error> {
+        Self::try_from_slice(data.as_ref())
+    }
+}
+
+impl From<&Config> for Data {
+    fn from(config: &Config) -> Self {
+        let mut data = Vec::with_capacity(std::mem::size_of_val(config));
+
+        BorshSerialize::serialize(config, &mut data).expect("Serialization to Vec should not fail");
+
+        Self::try_from(data).expect("Config encoded data should fit into Data")
+    }
+}
+
+#[must_use]
+pub fn compute_config_pda(curve_program_id: ProgramId) -> AccountId {
+    AccountId::for_public_pda(&curve_program_id, &compute_config_pda_seed())
+}
+
+#[must_use]
+pub fn compute_config_pda_seed() -> PdaSeed {
+    let mut bytes = [0_u8; 32];
+    bytes[..6].copy_from_slice(b"config");
+    PdaSeed::new(bytes)
+}
+
 /// Reads a [`Sale`] out of the sale PDA's data.
 pub fn sale_from_data(data: &Data) -> std::io::Result<Sale> {
     Sale::try_from_slice(data.as_ref())
@@ -63,47 +129,4 @@ pub fn sale_to_data(sale: &Sale) -> Data {
     let mut bytes = Vec::with_capacity(std::mem::size_of_val(sale));
     BorshSerialize::serialize(sale, &mut bytes).expect("serialisation to a Vec cannot fail");
     Data::try_from(bytes).expect("a sale is far below the account data size limit")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use sale::Sale;
-
-    #[test]
-    fn sale_state_round_trips_through_account_data() {
-        let sale = Sale::create([1; 32], [2; 32], 800, 200, 1000, 100).expect("valid sale");
-        let data = sale_to_data(&sale);
-        assert_eq!(sale_from_data(&data).expect("data parses"), sale);
-    }
-
-    #[test]
-    fn every_instruction_survives_the_guest_wire_format() {
-        // `read_lee_inputs::<Instruction>()` in the guest deserialises with risc0's serde.
-        let instructions = [
-            Instruction::CreateSale {
-                sale_reserve: 800,
-                dex_seed_reserve: 200,
-                virtual_token_reserve: 1000,
-                virtual_collateral_reserve: 100,
-                curve_program_id: [7; 8],
-            },
-            Instruction::Buy {
-                collateral_in: 25,
-                min_tokens_out: 190,
-            },
-            Instruction::Sell {
-                tokens_in: 250,
-                min_collateral_out: 18,
-            },
-            Instruction::Close,
-            Instruction::Withdraw,
-        ];
-        for instruction in instructions {
-            let words = risc0_zkvm::serde::to_vec(&instruction).expect("instruction serialises");
-            let back: Instruction =
-                risc0_zkvm::serde::from_slice(&words).expect("wire words parse");
-            assert_eq!(back, instruction);
-        }
-    }
 }
