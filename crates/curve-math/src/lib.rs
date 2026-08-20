@@ -5,13 +5,19 @@
 //! direction at every call site is visible at the call rather than inferred from
 //! context.
 //!
+//! These are honest quotes over the current reserves. Rounding drift accumulates
+//! as `Vt * Vc` moves above `k`, and a quote treats that surplus as spendable:
+//! after ordinary trades, a zero-amount trade can quote a positive payout. Callers
+//! must reject zero-amount trades; the state machine in `crates/sale` owns that.
+//!
 //! The u128 bound argument lives in `docs/adr/0004`.
 
 /// Why a pricing call could not produce a number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MathError {
-    /// An intermediate operation left u128. Unreachable for states created
-    /// under the ADR 0004 bounds; kept because this crate checks everything.
+    /// An intermediate operation left u128. The ADR 0004 bounds make the state
+    /// safe on its own, but trade amounts are unbounded input, so this arm is
+    /// a real guard, not a formality.
     Overflow,
     /// The trade asks for more than the virtual reserves back.
     ExceedsVirtualReserves,
