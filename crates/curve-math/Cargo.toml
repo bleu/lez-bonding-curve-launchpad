@@ -1,0 +1,17 @@
+[package]
+name = "curve-math"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+# Deliberately empty. This crate holds the pricing arithmetic as pure functions
+# over integers, and an empty dependency list is what makes that checkable
+# rather than promised.
+[dependencies]
+
+# `arithmetic_side_effects` is denied here and in `sale` only. Bare `+`, `*` and
+# `/` are impossible, so every operation is a named checked call and every
+# exception carries a written reason with the bound that makes it hold.
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+arithmetic_side_effects = "deny"
