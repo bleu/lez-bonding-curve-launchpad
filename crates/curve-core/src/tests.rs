@@ -6,9 +6,11 @@ use lee_core::{
     program::{Claim, ProgramId},
 };
 
+use sale::Sale;
+
 use crate::{
-    Config, GENESIS_ADMIN, compute_config_pda, compute_config_pda_seed,
-    update_config::update_config,
+    Config, GENESIS_ADMIN, Instruction, SaleAccount, compute_config_pda, compute_config_pda_seed,
+    compute_sale_pda, update_config::update_config,
 };
 
 const CURVE_PROGRAM_ID: ProgramId = [7; 8];
@@ -232,5 +234,64 @@ fn first_update_config_initializes_the_config() {
         config_post.required_claim(),
         Some(Claim::Pda(compute_config_pda_seed())),
         "creation must claim the config PDA"
+    );
+}
+
+#[test]
+fn sale_state_round_trips_through_account_data() {
+    let sale_account = SaleAccount {
+        token_definition_id: AccountId::new([1; 32]),
+        collateral_definition_id: AccountId::new([2; 32]),
+        sale: Sale::create(800, 200, 1000, 100).expect("valid sale"),
+    };
+    let data = Data::from(&sale_account);
+    assert_eq!(
+        SaleAccount::try_from(&data).expect("data parses"),
+        sale_account
+    );
+}
+
+#[test]
+fn every_instruction_survives_the_guest_wire_format() {
+    // `read_lee_inputs::<Instruction>()` in the guest deserialises with risc0's serde.
+    let instructions = [
+        Instruction::UpdateConfig {
+            admin: new_admin(),
+            fee_bps: 250,
+            treasury: new_treasury(),
+        },
+        Instruction::CreateSale {
+            sale_reserve: 800,
+            dex_seed_reserve: 200,
+            virtual_token_reserve: 1000,
+            virtual_collateral_reserve: 100,
+            curve_program_id: [7; 8],
+        },
+        Instruction::Buy {
+            collateral_in: 25,
+            min_tokens_out: 190,
+        },
+        Instruction::Sell {
+            tokens_in: 250,
+            min_collateral_out: 18,
+        },
+        Instruction::Close,
+        Instruction::Withdraw,
+    ];
+    for instruction in instructions {
+        let words = risc0_zkvm::serde::to_vec(&instruction).expect("instruction serialises");
+        let back: Instruction = risc0_zkvm::serde::from_slice(&words).expect("wire words parse");
+        assert_eq!(back, instruction);
+    }
+}
+
+#[test]
+fn the_sale_pda_hashes_the_pair_in_fixed_order() {
+    // Token and collateral are different roles: swapping them is a different sale.
+    let token = AccountId::new([1; 32]);
+    let collateral = AccountId::new([2; 32]);
+    assert_ne!(
+        compute_sale_pda(CURVE_PROGRAM_ID, token, collateral),
+        compute_sale_pda(CURVE_PROGRAM_ID, collateral, token)
     );
 }

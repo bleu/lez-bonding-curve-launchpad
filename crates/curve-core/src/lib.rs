@@ -8,17 +8,15 @@
 //! The handlers stay shallow. They deserialize accounts, call `sale`, and translate the
 //! returned outcome into account post-states and chained calls. No decisions here.
 //!
-//! One consequence of `Sale` living in the `sale` crate: `impl TryFrom<&Data> for Sale`
-//! is blocked by the orphan rule, both types being foreign. Read the state through a free
-//! function calling borsh's `try_from_slice` instead of the upstream `TryFrom` impl.
-//!
-//! Filled in by GTM-508 onward. GTM-509 adds the guest shim and deletes `deploy_probe`.
+//! The sale handlers arrive with GTM-509 onward, which also adds the guest shim and
+//! deletes `deploy_probe`.
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use lee_core::{
     account::{AccountId, Data},
     program::{PdaSeed, ProgramId},
 };
+use sale::Sale;
 use serde::{Deserialize, Serialize};
 
 pub mod update_config;
@@ -26,8 +24,9 @@ pub mod update_config;
 #[cfg(test)]
 mod tests;
 
-/// Curve program instruction. GTM-508 adds the sale variants.
-#[derive(Serialize, Deserialize)]
+/// Curve program instruction. The account lists of the sale variants are settled
+/// by the issue that implements each handler.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Instruction {
     /// Creates the config PDA on the first call, replaces it whole after.
     ///
@@ -40,6 +39,31 @@ pub enum Instruction {
         fee_bps: u16,
         treasury: AccountId,
     },
+    /// Opens a sale over the token pair handed to it. Handler: GTM-509.
+    CreateSale {
+        sale_reserve: u128,
+        dex_seed_reserve: u128,
+        virtual_token_reserve: u128,
+        virtual_collateral_reserve: u128,
+        /// The program cannot see its own id; PDA derivation needs it passed in.
+        curve_program_id: ProgramId,
+    },
+    /// Buys from the curve, auto-closing on the buy that exhausts the sale
+    /// reserve. Handler: GTM-510.
+    Buy {
+        collateral_in: u128,
+        min_tokens_out: u128,
+    },
+    /// Sells back to the curve while the sale is open. Handler: GTM-511.
+    Sell {
+        tokens_in: u128,
+        min_collateral_out: u128,
+    },
+    /// Creator-only manual close. Handler: GTM-512.
+    Close,
+    /// Creator withdrawal of the real collateral reserve plus the unused DEX
+    /// seed reserve, after close. Handler: GTM-512.
+    Withdraw,
 }
 
 /// The admin key allowed to initialize the config. Compiled in, so it is part of the
@@ -88,4 +112,67 @@ pub fn compute_config_pda_seed() -> PdaSeed {
     let mut bytes = [0_u8; 32];
     bytes[..6].copy_from_slice(b"config");
     PdaSeed::new(bytes)
+}
+
+/// The sale PDA's whole contents: the token pair the sale runs over, and the
+/// [`Sale`] state machine that prices it.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct SaleAccount {
+    pub token_definition_id: AccountId,
+    pub collateral_definition_id: AccountId,
+    pub sale: Sale,
+}
+
+impl TryFrom<&Data> for SaleAccount {
+    type Error = std::io::Error;
+
+    fn try_from(data: &Data) -> Result<Self, Self::Error> {
+        Self::try_from_slice(data.as_ref())
+    }
+}
+
+impl From<&SaleAccount> for Data {
+    fn from(sale_account: &SaleAccount) -> Self {
+        let mut bytes = Vec::with_capacity(std::mem::size_of_val(sale_account));
+
+        BorshSerialize::serialize(sale_account, &mut bytes)
+            .expect("serialisation to a Vec cannot fail");
+
+        Self::try_from(bytes).expect("a sale account is far below the account data size limit")
+    }
+}
+
+/// One sale per ordered pair per program, ever. Token and collateral are
+/// different roles, so the pair hashes in fixed order with no sort; the
+/// factory mints a fresh token per launch, so the pair never repeats in
+/// practice.
+#[must_use]
+pub fn compute_sale_pda(
+    curve_program_id: ProgramId,
+    token_definition_id: AccountId,
+    collateral_definition_id: AccountId,
+) -> AccountId {
+    AccountId::for_public_pda(
+        &curve_program_id,
+        &compute_sale_pda_seed(token_definition_id, collateral_definition_id),
+    )
+}
+
+#[must_use]
+pub fn compute_sale_pda_seed(
+    token_definition_id: AccountId,
+    collateral_definition_id: AccountId,
+) -> PdaSeed {
+    use risc0_zkvm::sha::{Impl, Sha256 as _};
+
+    let mut bytes = [0; 64];
+    bytes[0..32].copy_from_slice(&token_definition_id.to_bytes());
+    bytes[32..].copy_from_slice(&collateral_definition_id.to_bytes());
+
+    PdaSeed::new(
+        Impl::hash_bytes(&bytes)
+            .as_bytes()
+            .try_into()
+            .expect("Hash output must be exactly 32 bytes long"),
+    )
 }
