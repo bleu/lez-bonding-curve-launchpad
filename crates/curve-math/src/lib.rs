@@ -23,6 +23,20 @@ pub enum MathError {
     ExceedsVirtualReserves,
 }
 
+// Hand-written: the dependency rules keep `thiserror` out of this crate.
+impl std::fmt::Display for MathError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Overflow => write!(f, "an intermediate operation left u128"),
+            Self::ExceedsVirtualReserves => {
+                write!(f, "the trade asks for more than the virtual reserves back")
+            }
+        }
+    }
+}
+
+impl std::error::Error for MathError {}
+
 /// Tokens dispensed for `c_in` collateral: `Vt - k / (Vc + C_in)`, rounded down.
 pub fn buy_tokens_out_floor(vt: u128, vc: u128, k: u128, c_in: u128) -> Result<u128, MathError> {
     let collateral = vc.checked_add(c_in).ok_or(MathError::Overflow)?;

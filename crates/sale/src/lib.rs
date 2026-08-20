@@ -44,6 +44,34 @@ pub enum CreateError {
     VirtualCollateralReserveZero,
 }
 
+// Hand-written: the dependency rules keep `thiserror` out of this crate.
+impl std::fmt::Display for CreateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::VirtualTokenReserveNotAboveSaleReserve => {
+                write!(f, "the virtual token reserve must exceed the sale reserve")
+            }
+            Self::VirtualReserveAboveBound => {
+                write!(
+                    f,
+                    "a virtual reserve at or above 2^64 would let k leave u128"
+                )
+            }
+            Self::SaleReserveZero => {
+                write!(f, "a sale with nothing to dispense can never complete")
+            }
+            Self::VirtualCollateralReserveZero => {
+                write!(
+                    f,
+                    "a zero virtual collateral reserve prices the curve at nothing"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for CreateError {}
+
 /// Both virtual reserves stay below 2^64 so `k = Vt * Vc` always fits u128.
 /// The full argument is `docs/adr/0004`.
 pub const VIRTUAL_RESERVE_BOUND: u128 = 1 << 64;
