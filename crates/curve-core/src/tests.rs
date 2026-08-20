@@ -10,7 +10,7 @@ use sale::Sale;
 
 use crate::{
     Config, GENESIS_ADMIN, Instruction, SaleAccount, compute_config_pda, compute_config_pda_seed,
-    update_config::update_config,
+    compute_sale_pda, update_config::update_config,
 };
 
 const CURVE_PROGRAM_ID: ProgramId = [7; 8];
@@ -283,4 +283,15 @@ fn every_instruction_survives_the_guest_wire_format() {
         let back: Instruction = risc0_zkvm::serde::from_slice(&words).expect("wire words parse");
         assert_eq!(back, instruction);
     }
+}
+
+#[test]
+fn the_sale_pda_hashes_the_pair_in_fixed_order() {
+    // Token and collateral are different roles: swapping them is a different sale.
+    let token = AccountId::new([1; 32]);
+    let collateral = AccountId::new([2; 32]);
+    assert_ne!(
+        compute_sale_pda(CURVE_PROGRAM_ID, token, collateral),
+        compute_sale_pda(CURVE_PROGRAM_ID, collateral, token)
+    );
 }

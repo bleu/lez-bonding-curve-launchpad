@@ -141,3 +141,38 @@ impl From<&SaleAccount> for Data {
         Self::try_from(bytes).expect("a sale account is far below the account data size limit")
     }
 }
+
+/// One sale per ordered pair per program, ever. Token and collateral are
+/// different roles, so the pair hashes in fixed order with no sort; the
+/// factory mints a fresh token per launch, so the pair never repeats in
+/// practice.
+#[must_use]
+pub fn compute_sale_pda(
+    curve_program_id: ProgramId,
+    token_definition_id: AccountId,
+    collateral_definition_id: AccountId,
+) -> AccountId {
+    AccountId::for_public_pda(
+        &curve_program_id,
+        &compute_sale_pda_seed(token_definition_id, collateral_definition_id),
+    )
+}
+
+#[must_use]
+pub fn compute_sale_pda_seed(
+    token_definition_id: AccountId,
+    collateral_definition_id: AccountId,
+) -> PdaSeed {
+    use risc0_zkvm::sha::{Impl, Sha256 as _};
+
+    let mut bytes = [0; 64];
+    bytes[0..32].copy_from_slice(&token_definition_id.to_bytes());
+    bytes[32..].copy_from_slice(&collateral_definition_id.to_bytes());
+
+    PdaSeed::new(
+        Impl::hash_bytes(&bytes)
+            .as_bytes()
+            .try_into()
+            .expect("Hash output must be exactly 32 bytes long"),
+    )
+}
