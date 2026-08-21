@@ -64,6 +64,16 @@ pub enum Instruction {
         curve_program_id: ProgramId,
     },
     /// Swaps an exact input amount; `token_in` selects the direction.
+    ///
+    /// Required accounts, in order:
+    /// - Pool PDA
+    /// - Config PDA
+    /// - Participant (authorized)
+    /// - Participant input ATA
+    /// - Pool input ATA
+    /// - Pool output ATA
+    /// - Participant output ATA
+    /// - Treasury input ATA
     SwapExactInput {
         amount_in: u128,
         min_amount_out: u128,

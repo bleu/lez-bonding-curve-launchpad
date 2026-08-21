@@ -12,6 +12,7 @@ use lee_core::{
 use pool::Pool;
 use token_core::{TokenDefinition, TokenHolding};
 
+use crate::dispatch::process_instruction;
 use crate::{
     ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID, Config, GENESIS_ADMIN, Instruction, PoolAccount,
     compute_config_pda, compute_config_pda_seed, compute_pool_pda,
@@ -109,6 +110,25 @@ fn owner_source_ata(owner: AccountId, token_definition_id: AccountId) -> Account
             data: Data::from(&TokenHolding::Fungible {
                 definition_id: token_definition_id,
                 balance: 1_000,
+            }),
+            ..Account::default()
+        },
+    )
+}
+
+fn holding_ata(
+    owner: AccountId,
+    token_definition_id: AccountId,
+    balance: u128,
+) -> AccountWithMetadata {
+    ata(
+        owner,
+        token_definition_id,
+        Account {
+            program_owner: TOKEN_PROGRAM_ID,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: token_definition_id,
+                balance,
             }),
             ..Account::default()
         },
@@ -700,6 +720,90 @@ fn exact_input_handler_selects_direction_and_pairs_the_fee_with_token_in() {
     assert_eq!(
         (updated.pool.real_reserve0, updated.pool.real_reserve1),
         (1048, 81)
+    );
+}
+
+#[test]
+fn exact_input_dispatch_settles_the_gross_input_fee_and_output_atomically() {
+    let owner = AccountId::new([3; 32]);
+    let participant = AccountId::new([4; 32]);
+    let token0 = AccountId::new([1; 32]);
+    let token1 = AccountId::new([2; 32]);
+    let pool_id = compute_pool_pda(CURVE_PROGRAM_ID, token0, token1, owner);
+    let pool = AccountWithMetadata {
+        account: Account {
+            program_owner: CURVE_PROGRAM_ID,
+            data: Data::from(&PoolAccount {
+                token0_definition_id: token0,
+                token1_definition_id: token1,
+                owner,
+                pool: Pool::create(800, 100, 1000, 100, None).expect("valid pool"),
+            }),
+            ..Account::default()
+        },
+        is_authorized: false,
+        account_id: pool_id,
+    };
+    let participant_token0 = holding_ata(participant, token0, 1_000);
+    let participant_token1 = holding_ata(participant, token1, 0);
+    let pool_token0 = holding_ata(pool_id, token0, 800);
+    let pool_token1 = holding_ata(pool_id, token1, 100);
+    let treasury_token0 = ata(new_treasury(), token0, Account::default());
+
+    let (posts, calls) = process_instruction(
+        vec![
+            pool,
+            initialized_config(new_admin()),
+            signer(participant),
+            participant_token0.clone(),
+            pool_token0.clone(),
+            pool_token1.clone(),
+            participant_token1.clone(),
+            treasury_token0.clone(),
+        ],
+        Instruction::SwapExactInput {
+            amount_in: 250,
+            min_amount_out: 19,
+            token_in: token0,
+        },
+        CURVE_PROGRAM_ID,
+    );
+
+    let [post]: [_; 1] = posts
+        .try_into()
+        .expect("only the pool state changes directly");
+    let updated = PoolAccount::try_from(&post.account().data).expect("valid pool state");
+    assert_eq!(
+        (updated.pool.real_reserve0, updated.pool.real_reserve1),
+        (1048, 81)
+    );
+    assert_eq!(calls.len(), 3, "input, protocol fee, and output transfers");
+    let amounts: Vec<u128> = calls
+        .iter()
+        .map(|call| {
+            let instruction: AtaInstruction = risc0_zkvm::serde::from_slice(&call.instruction_data)
+                .expect("ATA instruction parses");
+            match instruction {
+                AtaInstruction::Transfer { amount, .. } => amount,
+                _ => panic!("swap settlement contains only transfers"),
+            }
+        })
+        .collect();
+    assert_eq!(amounts, vec![248, 2, 19]);
+    assert_eq!(calls[0].pre_states[0].account_id, participant);
+    assert_eq!(
+        calls[0].pre_states[1].account_id,
+        participant_token0.account_id
+    );
+    assert_eq!(calls[0].pre_states[2].account_id, pool_token0.account_id);
+    assert_eq!(
+        calls[1].pre_states[2].account_id,
+        treasury_token0.account_id
+    );
+    assert_eq!(calls[2].pre_states[0].account_id, pool_id);
+    assert_eq!(
+        calls[2].pre_states[2].account_id,
+        participant_token1.account_id
     );
 }
 
