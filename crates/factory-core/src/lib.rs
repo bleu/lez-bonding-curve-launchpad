@@ -450,6 +450,7 @@ pub fn unlock_creator_allocation(
     pool: AccountWithMetadata,
     escrow: AccountWithMetadata,
     creator: AccountWithMetadata,
+    token_definition: AccountWithMetadata,
     creator_holding: AccountWithMetadata,
     factory_program_id: ProgramId,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
@@ -473,6 +474,10 @@ pub fn unlock_creator_allocation(
     assert_eq!(
         escrow.account_id, state.creator_escrow_id,
         "Creator escrow does not belong to factory launch"
+    );
+    assert_eq!(
+        token_definition.account_id, state.token_definition_id,
+        "Token definition does not belong to factory launch"
     );
     associated_token_account_core::verify_ata_and_get_seed(
         &creator_holding,
@@ -509,6 +514,17 @@ pub fn unlock_creator_allocation(
         };
         vec![
             ChainedCall::new(
+                ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID,
+                vec![
+                    creator.clone(),
+                    token_definition.clone(),
+                    creator_holding.clone(),
+                ],
+                &associated_token_account_core::Instruction::Create {
+                    ata_program_id: ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID,
+                },
+            ),
+            ChainedCall::new(
                 escrow.account.program_owner,
                 vec![
                     AccountWithMetadata {
@@ -530,6 +546,7 @@ pub fn unlock_creator_allocation(
             AccountPostState::new(pool.account),
             AccountPostState::new(escrow.account.clone()),
             AccountPostState::new(creator.account),
+            AccountPostState::new(token_definition.account),
             AccountPostState::new(creator_holding.account.clone()),
         ],
         calls,
@@ -647,14 +664,22 @@ pub fn process_instruction(
             )
         }
         Instruction::UnlockCreatorAllocation => {
-            let [factory, pool, escrow, creator, creator_holding] = pre_states
+            let [
+                factory,
+                pool,
+                escrow,
+                creator,
+                token_definition,
+                creator_holding,
+            ] = pre_states
                 .try_into()
-                .expect("UnlockCreatorAllocation requires exactly five accounts");
+                .expect("UnlockCreatorAllocation requires exactly six accounts");
             unlock_creator_allocation(
                 factory,
                 pool,
                 escrow,
                 creator,
+                token_definition,
                 creator_holding,
                 factory_program_id,
             )
@@ -689,6 +714,17 @@ mod tests {
             account: Account::default(),
             account_id: AccountId::new([id; 32]),
             is_authorized,
+        }
+    }
+
+    fn token_definition(account_id: AccountId) -> AccountWithMetadata {
+        AccountWithMetadata {
+            account: Account {
+                program_owner: TOKEN_PROGRAM_ID,
+                ..Account::default()
+            },
+            account_id,
+            is_authorized: false,
         }
     }
 
@@ -780,6 +816,7 @@ mod tests {
                 ..creator(2, false)
             },
             creator(9, false),
+            token_definition(state.token_definition_id),
             creator(3, false),
             FACTORY_PROGRAM_ID,
         );
@@ -801,6 +838,7 @@ mod tests {
                 ..creator(2, false)
             },
             creator(8, true),
+            token_definition(state.token_definition_id),
             creator(3, false),
             FACTORY_PROGRAM_ID,
         );
@@ -822,6 +860,7 @@ mod tests {
                 ..creator(2, false)
             },
             expected_creator,
+            token_definition(state.token_definition_id),
             creator(3, false),
             FACTORY_PROGRAM_ID,
         );
@@ -866,6 +905,7 @@ mod tests {
             pool,
             escrow,
             expected_creator,
+            token_definition(state.token_definition_id),
             creator_holding,
             FACTORY_PROGRAM_ID,
         );
@@ -874,6 +914,61 @@ mod tests {
         let unlocked =
             FactoryState::try_from(&post_states[0].account().data).expect("factory state parses");
         assert!(unlocked.creator_unlocked);
+    }
+
+    #[test]
+    fn delayed_unlock_initializes_a_fresh_creator_ata_before_transfer() {
+        let expected_creator = creator(9, true);
+        let (factory, state) = delayed_factory(&expected_creator);
+        let mut closed_pool = Pool::create(800, 0, 1_000, 100, None).expect("valid pool");
+        closed_pool.close_pool();
+        let pool = AccountWithMetadata {
+            account: Account {
+                data: Data::from(&PoolAccount {
+                    token0_definition_id: state.token_definition_id,
+                    token1_definition_id: state.collateral_definition_id,
+                    owner: factory.account_id,
+                    pool: closed_pool,
+                }),
+                ..Account::default()
+            },
+            account_id: state.pool_id,
+            is_authorized: false,
+        };
+        let escrow = AccountWithMetadata {
+            account: Account {
+                program_owner: TOKEN_PROGRAM_ID,
+                data: Data::from(&TokenHolding::Fungible {
+                    definition_id: state.token_definition_id,
+                    balance: state.creator_allocation,
+                }),
+                ..Account::default()
+            },
+            account_id: state.creator_escrow_id,
+            is_authorized: false,
+        };
+        let creator_holding = AccountWithMetadata {
+            account: Account::default(),
+            account_id: ata_id(expected_creator.account_id, state.token_definition_id),
+            is_authorized: false,
+        };
+
+        let (_post_states, calls) = unlock_creator_allocation(
+            factory,
+            pool,
+            escrow,
+            expected_creator,
+            token_definition(state.token_definition_id),
+            creator_holding,
+            FACTORY_PROGRAM_ID,
+        );
+
+        assert_eq!(
+            calls.len(),
+            2,
+            "a fresh creator ATA must be initialized before the escrow transfer"
+        );
+        assert_eq!(calls[0].program_id, ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID);
     }
 
     #[test]
