@@ -10,6 +10,9 @@ license = "MIT OR Apache-2.0"
 borsh.workspace = true
 curve-math.workspace = true
 
+[dev-dependencies]
+proptest = "1.11.0"
+
 [lints.clippy]
 all = { level = "deny", priority = -1 }
 arithmetic_side_effects = "deny"

@@ -37,7 +37,7 @@ impl std::fmt::Display for CreateError {
 
 impl std::error::Error for CreateError {}
 
-/// Both virtual reserves stay below 2^64 so `k = Vt * Vc` always fits u128.
+/// Both initial virtual reserves stay below 2^64 so creation-time `k` fits u128.
 /// The full argument is `docs/adr/0004`.
 pub const VIRTUAL_RESERVE_BOUND: u128 = 1 << 64;
 
@@ -62,9 +62,15 @@ pub enum TokenSide {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SwapOutcome {
+    /// Gross debit from the trader, including both fee portions.
     pub amount_in: u128,
+    /// Amount used by the constant-product quote.
+    pub effective_amount_in: u128,
     pub amount_out: u128,
-    pub fee: u128,
+    /// Fee retained in the input-side real and virtual reserves.
+    pub pool_fee: u128,
+    /// Fee transferred to the treasury holding for the input token.
+    pub protocol_fee: u128,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,6 +78,7 @@ pub enum SwapError {
     Closed,
     ZeroAmount,
     FeeAboveDenominator,
+    InputConsumedByFees,
     Arithmetic,
     SlippageExceeded,
     InsufficientRealOutputReserve,
@@ -118,42 +125,51 @@ impl Pool {
         token_in: TokenSide,
         amount_in: u128,
         min_amount_out: u128,
-        fee_bps: u16,
+        pool_fee_bps: u16,
+        protocol_fee_bps: u16,
         now: u64,
     ) -> Result<SwapOutcome, SwapError> {
         self.ensure_swappable(now)?;
         if amount_in == 0 {
             return Err(SwapError::ZeroAmount);
         }
-        if fee_bps > 10_000 {
-            return Err(SwapError::FeeAboveDenominator);
-        }
-        let fee = amount_in
-            .checked_mul(u128::from(fee_bps))
-            .ok_or(SwapError::Arithmetic)?
-            .checked_div(10_000)
-            .ok_or(SwapError::Arithmetic)?;
-        let net_input = amount_in.checked_sub(fee).ok_or(SwapError::Arithmetic)?;
+        let (effective_input, pool_fee, protocol_fee) =
+            split_input(amount_in, pool_fee_bps, protocol_fee_bps)?;
         let (virtual_in, virtual_out, real_in, real_out) = self.reserves(token_in);
-        let amount_out =
-            curve_math::exact_input_amount_out_floor(virtual_in, virtual_out, self.k, net_input)
-                .map_err(|_| SwapError::Arithmetic)?;
+        let current_product = virtual_in
+            .checked_mul(virtual_out)
+            .ok_or(SwapError::Arithmetic)?;
+        let amount_out = curve_math::exact_input_amount_out_floor(
+            virtual_in,
+            virtual_out,
+            current_product,
+            effective_input,
+        )
+        .map_err(|_| SwapError::Arithmetic)?;
         if amount_out < min_amount_out {
             return Err(SwapError::SlippageExceeded);
         }
         if amount_out > real_out {
             return Err(SwapError::InsufficientRealOutputReserve);
         }
+        let retained_input = effective_input
+            .checked_add(pool_fee)
+            .ok_or(SwapError::Arithmetic)?;
+        let new_virtual_in = virtual_in
+            .checked_add(retained_input)
+            .ok_or(SwapError::Arithmetic)?;
+        let new_virtual_out = virtual_out
+            .checked_sub(amount_out)
+            .ok_or(SwapError::Arithmetic)?;
+        new_virtual_in
+            .checked_mul(new_virtual_out)
+            .ok_or(SwapError::Arithmetic)?;
         self.set_reserves(
             token_in,
-            virtual_in
-                .checked_add(net_input)
-                .ok_or(SwapError::Arithmetic)?,
-            virtual_out
-                .checked_sub(amount_out)
-                .ok_or(SwapError::Arithmetic)?,
+            new_virtual_in,
+            new_virtual_out,
             real_in
-                .checked_add(net_input)
+                .checked_add(retained_input)
                 .ok_or(SwapError::Arithmetic)?,
             real_out
                 .checked_sub(amount_out)
@@ -161,8 +177,10 @@ impl Pool {
         );
         Ok(SwapOutcome {
             amount_in,
+            effective_amount_in: effective_input,
             amount_out,
-            fee,
+            pool_fee,
+            protocol_fee,
         })
     }
 
@@ -171,46 +189,64 @@ impl Pool {
         token_in: TokenSide,
         amount_out: u128,
         max_amount_in: u128,
-        fee_bps: u16,
+        pool_fee_bps: u16,
+        protocol_fee_bps: u16,
         now: u64,
     ) -> Result<SwapOutcome, SwapError> {
         self.ensure_swappable(now)?;
         if amount_out == 0 {
             return Err(SwapError::ZeroAmount);
         }
-        if fee_bps >= 10_000 {
-            return Err(SwapError::FeeAboveDenominator);
-        }
         let (virtual_in, virtual_out, real_in, real_out) = self.reserves(token_in);
         if amount_out > real_out {
             return Err(SwapError::InsufficientRealOutputReserve);
         }
-        let net_input =
-            curve_math::exact_output_amount_in_ceil(virtual_in, virtual_out, self.k, amount_out)
-                .map_err(|_| SwapError::Arithmetic)?;
-        let fee = mul_div_floor(
-            net_input.checked_sub(1).ok_or(SwapError::Arithmetic)?,
-            u128::from(fee_bps),
+        let current_product = virtual_in
+            .checked_mul(virtual_out)
+            .ok_or(SwapError::Arithmetic)?;
+        let required_effective_input = curve_math::exact_output_amount_in_ceil(
+            virtual_in,
+            virtual_out,
+            current_product,
+            amount_out,
+        )
+        .map_err(|_| SwapError::Arithmetic)?;
+        let total_fee_bps = validate_fee_rates(pool_fee_bps, protocol_fee_bps)?;
+        if total_fee_bps == 10_000 {
+            return Err(SwapError::InputConsumedByFees);
+        }
+        let amount_in = mul_div_ceil(
+            required_effective_input,
+            10_000,
             u128::from(
                 10_000_u16
-                    .checked_sub(fee_bps)
+                    .checked_sub(total_fee_bps)
                     .ok_or(SwapError::Arithmetic)?,
             ),
         )?;
-        let amount_in = net_input.checked_add(fee).ok_or(SwapError::Arithmetic)?;
+        let (effective_input, pool_fee, protocol_fee) =
+            split_input(amount_in, pool_fee_bps, protocol_fee_bps)?;
         if amount_in > max_amount_in {
             return Err(SwapError::SlippageExceeded);
         }
+        let retained_input = effective_input
+            .checked_add(pool_fee)
+            .ok_or(SwapError::Arithmetic)?;
+        let new_virtual_in = virtual_in
+            .checked_add(retained_input)
+            .ok_or(SwapError::Arithmetic)?;
+        let new_virtual_out = virtual_out
+            .checked_sub(amount_out)
+            .ok_or(SwapError::Arithmetic)?;
+        new_virtual_in
+            .checked_mul(new_virtual_out)
+            .ok_or(SwapError::Arithmetic)?;
         self.set_reserves(
             token_in,
-            virtual_in
-                .checked_add(net_input)
-                .ok_or(SwapError::Arithmetic)?,
-            virtual_out
-                .checked_sub(amount_out)
-                .ok_or(SwapError::Arithmetic)?,
+            new_virtual_in,
+            new_virtual_out,
             real_in
-                .checked_add(net_input)
+                .checked_add(retained_input)
                 .ok_or(SwapError::Arithmetic)?,
             real_out
                 .checked_sub(amount_out)
@@ -218,8 +254,10 @@ impl Pool {
         );
         Ok(SwapOutcome {
             amount_in,
+            effective_amount_in: effective_input,
             amount_out,
-            fee,
+            pool_fee,
+            protocol_fee,
         })
     }
 
@@ -309,6 +347,62 @@ fn mul_div_floor(value: u128, multiplier: u128, divisor: u128) -> Result<u128, S
     whole.checked_add(fraction).ok_or(SwapError::Arithmetic)
 }
 
+fn mul_div_ceil(value: u128, multiplier: u128, divisor: u128) -> Result<u128, SwapError> {
+    let floor = mul_div_floor(value, multiplier, divisor)?;
+    let remainder = value.checked_rem(divisor).ok_or(SwapError::Arithmetic)?;
+    let fractional_numerator = remainder
+        .checked_mul(multiplier)
+        .ok_or(SwapError::Arithmetic)?;
+    if fractional_numerator
+        .checked_rem(divisor)
+        .ok_or(SwapError::Arithmetic)?
+        == 0
+    {
+        Ok(floor)
+    } else {
+        floor.checked_add(1).ok_or(SwapError::Arithmetic)
+    }
+}
+
+fn validate_fee_rates(pool_fee_bps: u16, protocol_fee_bps: u16) -> Result<u16, SwapError> {
+    let total_fee_bps = pool_fee_bps
+        .checked_add(protocol_fee_bps)
+        .ok_or(SwapError::FeeAboveDenominator)?;
+    if total_fee_bps > 10_000 {
+        Err(SwapError::FeeAboveDenominator)
+    } else {
+        Ok(total_fee_bps)
+    }
+}
+
+fn split_input(
+    gross_input: u128,
+    pool_fee_bps: u16,
+    protocol_fee_bps: u16,
+) -> Result<(u128, u128, u128), SwapError> {
+    let total_fee_bps = validate_fee_rates(pool_fee_bps, protocol_fee_bps)?;
+    if total_fee_bps == 0 {
+        return Ok((gross_input, 0, 0));
+    }
+
+    let combined_fee = mul_div_ceil(gross_input, u128::from(total_fee_bps), 10_000)?;
+    let effective_input = gross_input
+        .checked_sub(combined_fee)
+        .ok_or(SwapError::Arithmetic)?;
+    if effective_input == 0 {
+        return Err(SwapError::InputConsumedByFees);
+    }
+    let protocol_fee = mul_div_floor(
+        combined_fee,
+        u128::from(protocol_fee_bps),
+        u128::from(total_fee_bps),
+    )?;
+    let pool_fee = combined_fee
+        .checked_sub(protocol_fee)
+        .ok_or(SwapError::Arithmetic)?;
+    Ok((effective_input, pool_fee, protocol_fee))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,12 +424,12 @@ mod tests {
     fn exact_input_swaps_token0_for_token1_through_the_public_pool_api() {
         let mut pool = Pool::create(800, 100, 1000, 100, None).expect("valid pool");
         let outcome = pool
-            .swap_exact_input(TokenSide::Token0, 250, 20, 0, 1)
+            .swap_exact_input(TokenSide::Token0, 250, 20, 0, 0, 1)
             .expect("swap succeeds");
 
         assert_eq!(outcome.amount_in, 250);
         assert_eq!(outcome.amount_out, 20);
-        assert_eq!(outcome.fee, 0);
+        assert_eq!((outcome.pool_fee, outcome.protocol_fee), (0, 0));
         assert_eq!(pool.virtual_reserve0, 1250);
         assert_eq!(pool.virtual_reserve1, 80);
         assert_eq!(pool.real_reserve0, 1050);
@@ -343,36 +437,39 @@ mod tests {
     }
 
     #[test]
-    fn exact_input_fee_is_removed_from_whichever_token_is_input() {
+    fn exact_input_pool_fee_is_retained_in_whichever_token_is_input() {
         let mut token0_in = Pool::create(800, 100, 1000, 100, None).expect("valid pool");
         let forward = token0_in
-            .swap_exact_input(TokenSide::Token0, 250, 18, 1_000, 1)
+            .swap_exact_input(TokenSide::Token0, 250, 18, 1_000, 0, 1)
             .expect("token0 input succeeds");
-        assert_eq!((forward.fee, forward.amount_out), (25, 18));
-        assert_eq!(token0_in.real_reserve0, 1025);
+        assert_eq!((forward.pool_fee, forward.protocol_fee), (25, 0));
+        assert_eq!(forward.amount_out, 18);
+        assert_eq!(token0_in.real_reserve0, 1050);
 
         let mut token1_in = Pool::create(800, 100, 1000, 100, None).expect("valid pool");
         let reverse = token1_in
-            .swap_exact_input(TokenSide::Token1, 25, 186, 1_000, 1)
+            .swap_exact_input(TokenSide::Token1, 25, 180, 1_000, 0, 1)
             .expect("token1 input succeeds");
-        assert_eq!((reverse.fee, reverse.amount_out), (2, 186));
-        assert_eq!(token1_in.real_reserve1, 123);
+        assert_eq!((reverse.pool_fee, reverse.protocol_fee), (3, 0));
+        assert_eq!(reverse.amount_out, 180);
+        assert_eq!(token1_in.real_reserve1, 125);
     }
 
     #[test]
     fn exact_output_swaps_token1_for_token0_with_the_fee_inside_max_input() {
         let mut pool = Pool::create(800, 100, 1000, 100, None).expect("valid pool");
         let outcome = pool
-            .swap_exact_output(TokenSide::Token1, 200, 27, 1_000, 1)
+            .swap_exact_output(TokenSide::Token1, 200, 28, 1_000, 0, 1)
             .expect("swap succeeds");
 
-        assert_eq!(outcome.amount_in, 27);
+        assert_eq!(outcome.amount_in, 28);
         assert_eq!(outcome.amount_out, 200);
-        assert_eq!(outcome.fee, 2);
+        assert_eq!(outcome.pool_fee, 3);
+        assert_eq!(outcome.protocol_fee, 0);
         assert_eq!(pool.virtual_reserve0, 800);
-        assert_eq!(pool.virtual_reserve1, 125);
+        assert_eq!(pool.virtual_reserve1, 128);
         assert_eq!(pool.real_reserve0, 600);
-        assert_eq!(pool.real_reserve1, 125);
+        assert_eq!(pool.real_reserve1, 128);
     }
 
     #[test]
@@ -380,18 +477,18 @@ mod tests {
         for fee_bps in [1, 2_500, 9_999] {
             let mut pool = Pool::create(800, 100, 1000, 100, None).expect("valid pool");
             let outcome = pool
-                .swap_exact_output(TokenSide::Token1, 100, u128::MAX, fee_bps, 1)
+                .swap_exact_output(TokenSide::Token1, 100, u128::MAX, fee_bps, 0, 1)
                 .expect("swap succeeds");
             let required_net = 12;
-            let charged = mul_div_floor(outcome.amount_in, u128::from(fee_bps), 10_000)
-                .expect("small fee arithmetic");
-            let net = outcome.amount_in.checked_sub(charged).expect("fee fits");
+            let (net, _, _) =
+                split_input(outcome.amount_in, fee_bps, 0).expect("small fee arithmetic");
             assert!(net >= required_net);
             let previous = outcome.amount_in.checked_sub(1).expect("positive input");
-            let previous_fee =
-                mul_div_floor(previous, u128::from(fee_bps), 10_000).expect("small fee arithmetic");
-            let previous_net = previous.checked_sub(previous_fee).expect("fee fits");
-            assert!(previous_net < required_net);
+            match split_input(previous, fee_bps, 0) {
+                Ok((previous_net, _, _)) => assert!(previous_net < required_net),
+                Err(SwapError::InputConsumedByFees) => {}
+                Err(error) => panic!("unexpected fee error: {error:?}"),
+            }
         }
     }
 
@@ -411,7 +508,7 @@ mod tests {
         let mut pool = Pool::create(800, 100, 1000, 100, Some(42)).expect("valid pool");
         let before = pool.clone();
         assert_eq!(
-            pool.swap_exact_input(TokenSide::Token0, 250, 20, 0, 42),
+            pool.swap_exact_input(TokenSide::Token0, 250, 20, 0, 0, 42),
             Err(SwapError::Closed)
         );
         assert_eq!(pool, before);
@@ -422,7 +519,7 @@ mod tests {
         let mut pool = Pool::create(800, 10, 1000, 100, None).expect("valid pool");
         let before = pool.clone();
         assert_eq!(
-            pool.swap_exact_input(TokenSide::Token0, 250, 0, 0, 1),
+            pool.swap_exact_input(TokenSide::Token0, 250, 0, 0, 0, 1),
             Err(SwapError::InsufficientRealOutputReserve)
         );
         assert_eq!(pool, before);

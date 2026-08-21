@@ -36,11 +36,9 @@ Stay on scaffold's `default` template rather than `lez-framework`. The framework
 
 ## Consequences
 
-As superseded by ADR 0005, `Pool` lives in `crates/pool` and holds only what pricing and solvency need. `curve-core` wraps it in `PoolAccount` next to ordered token IDs and owner, then serialises it into the pool PDA. `PoolAccount` is local to `curve-core`, so the account data conversions follow the in-tree `TryFrom<&Data>` and `From<&PoolAccount>` style.
+As superseded by ADR 0006, `Pool` lives in `crates/pool` and holds only what pricing and solvency need. `curve-core` wraps it in `PoolAccount` next to ordered token IDs and owner, then serialises it into the pool PDA. `PoolAccount` is local to `curve-core`, so the account data conversions follow the in-tree `TryFrom<&Data>` and `From<&PoolAccount>` style.
 
-`runner_support` moved from the root package into `crates/launchpad-client`, and `src/bin/run_deploy_probe.rs` calls it there. The root `src/lib.rs` is gone. The `lez-template` skill identifies a default-template project partly by that file existing, so identification now rests on `scaffold.toml` and `methods/guest/src/bin/`. Nothing in `lgs` itself requires the root lib: `build` runs `cargo build --workspace`, and `deploy` only globs the guest directory.
-
-Once GTM-509 replaces `deploy_probe` with the real curve program, the root package holds nothing. Collapsing it to a virtual manifest is that issue's call.
+GTM-509 replaced `deploy_probe` with the real curve guest and collapsed the root package to a virtual manifest. `runner_support` remains in `crates/launchpad-client`. The `lez-template` skill identifies a default-template project partly by the former root `src/lib.rs`, so identification now rests on `scaffold.toml` and `methods/guest/src/bin/`. Nothing in `lgs` requires a root package: `build` runs `cargo build --workspace`, and `deploy` globs the guest directory.
 
 Diverging from the in-tree layout is defensible on precedent. `eth-lez-atomic-swaps` puts its program at `programs/lez-htlc/methods/` and pins a scaffold commit specifically to set `deploy = false` and skip scaffold's deploy step. With two programs and one week, that is not worth it.
 

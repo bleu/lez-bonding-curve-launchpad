@@ -14,8 +14,10 @@ pub struct SwapSettlement {
     pub token_in: AccountId,
     pub token_out: AccountId,
     pub amount_in: u128,
+    pub effective_amount_in: u128,
     pub amount_out: u128,
-    pub fee: u128,
+    pub pool_fee: u128,
+    pub protocol_fee: u128,
     pub treasury: AccountId,
 }
 
@@ -35,7 +37,14 @@ pub fn swap_exact_input(
     let now = trusted_time(&pool_account, clock);
     let outcome = pool_account
         .pool
-        .swap_exact_input(side, amount_in, min_amount_out, config_data.fee_bps, now)
+        .swap_exact_input(
+            side,
+            amount_in,
+            min_amount_out,
+            config_data.pool_fee_bps,
+            config_data.protocol_fee_bps,
+            now,
+        )
         .expect("Exact-input swap is invalid");
 
     let mut post = pool.account;
@@ -46,8 +55,10 @@ pub fn swap_exact_input(
             token_in,
             token_out,
             amount_in: outcome.amount_in,
+            effective_amount_in: outcome.effective_amount_in,
             amount_out: outcome.amount_out,
-            fee: outcome.fee,
+            pool_fee: outcome.pool_fee,
+            protocol_fee: outcome.protocol_fee,
             treasury: config_data.treasury,
         },
     )
@@ -69,7 +80,14 @@ pub fn swap_exact_output(
     let now = trusted_time(&pool_account, clock);
     let outcome = pool_account
         .pool
-        .swap_exact_output(side, amount_out, max_amount_in, config_data.fee_bps, now)
+        .swap_exact_output(
+            side,
+            amount_out,
+            max_amount_in,
+            config_data.pool_fee_bps,
+            config_data.protocol_fee_bps,
+            now,
+        )
         .expect("Exact-output swap is invalid");
 
     let mut post = pool.account;
@@ -80,8 +98,10 @@ pub fn swap_exact_output(
             token_in,
             token_out,
             amount_in: outcome.amount_in,
+            effective_amount_in: outcome.effective_amount_in,
             amount_out: outcome.amount_out,
-            fee: outcome.fee,
+            pool_fee: outcome.pool_fee,
+            protocol_fee: outcome.protocol_fee,
             treasury: config_data.treasury,
         },
     )

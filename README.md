@@ -14,9 +14,15 @@ Handlers live in the host workspace under `crates/`, and each risc0 guest in `me
 
 ## Admin authority
 
-The fee rate and the treasury owner live in a singleton config PDA, read live by every swap. One instruction manages it: `update_config` creates the config on the first call and replaces it whole after, gated on the admin key. The first call must be signed by the genesis admin, a constant compiled into `curve-core`. Replace it with your key before the deploy build; it is part of the risc0 image ID, so changing it produces a different program. Deployment then has one required step: call `update_config` once before any swap, because swaps fail while the config does not exist.
+The pool and protocol fee rates and the treasury owner live in a singleton config PDA, read live by every swap. One instruction manages it: `update_config` creates the config on the first call and replaces it whole after, gated on the admin key. The first call must be signed by the genesis admin, a constant compiled into `curve-core`. Replace it with your key before the deploy build; it is part of the risc0 image ID, so changing it produces a different program. Deployment then has one required step: call `update_config` once before any swap, because swaps fail while the config does not exist.
 
 RFP-015 sources the admin authority from the RFP-001 library, which this proof of concept does not build. The seam it plugs into is the admin field itself: rotate the admin to the key that library controls and it holds the gate from then on, with no code change and no redeploy. Rotation is single-step, so a rotation to a wrong key is unrecoverable — check the key before you sign.
+
+## Ownership and privacy boundary
+
+Pool ownership is deliberately public. `create_pool` stores its authorized owner in pool state and scopes the pool PDA by the ordered token pair and owner. Direct creators may own pools themselves; the factory path supplies a factory-owned PDA so close and withdrawal must pass through factory policy. Creation verifies the owner's source ATAs, creates both pool-owned reserve ATAs, and atomically transfers both initial real reserves.
+
+Creator identity and privacy are launch policy, not AMM state. The future factory may commit to a private creator authority while exposing only its own owner PDA to the neutral pool.
 
 ## Build
 
