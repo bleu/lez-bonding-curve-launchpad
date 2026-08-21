@@ -142,16 +142,17 @@ impl From<&PoolAccount> for Data {
     }
 }
 
-/// One pool per ordered pair per program, ever. The pair hashes in fixed order.
+/// One pool per ordered pair and owner. The pair hashes in fixed order.
 #[must_use]
 pub fn compute_pool_pda(
     curve_program_id: ProgramId,
     token0_definition_id: AccountId,
     token1_definition_id: AccountId,
+    owner: AccountId,
 ) -> AccountId {
     AccountId::for_public_pda(
         &curve_program_id,
-        &compute_pool_pda_seed(token0_definition_id, token1_definition_id),
+        &compute_pool_pda_seed(token0_definition_id, token1_definition_id, owner),
     )
 }
 
@@ -159,12 +160,14 @@ pub fn compute_pool_pda(
 pub fn compute_pool_pda_seed(
     token0_definition_id: AccountId,
     token1_definition_id: AccountId,
+    owner: AccountId,
 ) -> PdaSeed {
     use risc0_zkvm::sha::{Impl, Sha256 as _};
 
-    let mut bytes = [0; 64];
+    let mut bytes = [0; 96];
     bytes[0..32].copy_from_slice(&token0_definition_id.to_bytes());
-    bytes[32..].copy_from_slice(&token1_definition_id.to_bytes());
+    bytes[32..64].copy_from_slice(&token1_definition_id.to_bytes());
+    bytes[64..].copy_from_slice(&owner.to_bytes());
 
     PdaSeed::new(
         Impl::hash_bytes(&bytes)

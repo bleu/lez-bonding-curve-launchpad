@@ -274,7 +274,7 @@ fn stored_pool_owner_can_close_the_pool() {
             ..Account::default()
         },
         is_authorized: false,
-        account_id: compute_pool_pda(CURVE_PROGRAM_ID, token0, token1),
+        account_id: compute_pool_pda(CURVE_PROGRAM_ID, token0, token1, owner),
     };
 
     let [post]: [_; 1] = close_pool(pool, signer(owner), CURVE_PROGRAM_ID)
@@ -303,7 +303,7 @@ fn an_unrelated_signer_cannot_close_the_pool() {
             ..Account::default()
         },
         is_authorized: false,
-        account_id: compute_pool_pda(CURVE_PROGRAM_ID, token0, token1),
+        account_id: compute_pool_pda(CURVE_PROGRAM_ID, token0, token1, owner),
     };
     let _ = close_pool(pool, intruder_signer(), CURVE_PROGRAM_ID);
 }
@@ -326,7 +326,7 @@ fn expired_pool_owner_can_withdraw_both_reserves_without_closing_first() {
             ..Account::default()
         },
         is_authorized: false,
-        account_id: compute_pool_pda(CURVE_PROGRAM_ID, token0, token1),
+        account_id: compute_pool_pda(CURVE_PROGRAM_ID, token0, token1, owner),
     };
     let clock = AccountWithMetadata {
         account: Account {
@@ -372,7 +372,7 @@ fn exact_input_handler_selects_direction_and_pairs_the_fee_with_token_in() {
             ..Account::default()
         },
         is_authorized: false,
-        account_id: compute_pool_pda(CURVE_PROGRAM_ID, token0, token1),
+        account_id: compute_pool_pda(CURVE_PROGRAM_ID, token0, token1, owner),
     };
 
     let (posts, settlement) = swap_exact_input(
@@ -414,7 +414,7 @@ fn exact_output_handler_caps_fee_inclusive_input_in_the_reverse_direction() {
             ..Account::default()
         },
         is_authorized: false,
-        account_id: compute_pool_pda(CURVE_PROGRAM_ID, token0, token1),
+        account_id: compute_pool_pda(CURVE_PROGRAM_ID, token0, token1, owner),
     };
     let config = AccountWithMetadata {
         account: Account {
@@ -447,7 +447,7 @@ fn direct_creation_funds_both_ordered_reserves_and_stores_the_selected_owner() {
     let pool = AccountWithMetadata {
         account: Account::default(),
         is_authorized: false,
-        account_id: compute_pool_pda(CURVE_PROGRAM_ID, token0, token1),
+        account_id: compute_pool_pda(CURVE_PROGRAM_ID, token0, token1, owner),
     };
 
     let (posts, funding) = create_pool(
@@ -466,7 +466,9 @@ fn direct_creation_funds_both_ordered_reserves_and_stores_the_selected_owner() {
     let [post]: [_; 1] = posts.try_into().expect("one post state");
     assert_eq!(
         post.required_claim(),
-        Some(Claim::Pda(crate::compute_pool_pda_seed(token0, token1)))
+        Some(Claim::Pda(crate::compute_pool_pda_seed(
+            token0, token1, owner
+        )))
     );
     let created = PoolAccount::try_from(&post.account().data).expect("valid pool state");
     assert_eq!(created.owner, owner);
@@ -513,10 +515,21 @@ fn every_instruction_survives_the_guest_wire_format() {
 
 #[test]
 fn the_pool_pda_hashes_the_pair_in_fixed_order() {
+    let owner = AccountId::new([3; 32]);
     let token0 = AccountId::new([1; 32]);
     let token1 = AccountId::new([2; 32]);
     assert_ne!(
-        compute_pool_pda(CURVE_PROGRAM_ID, token0, token1),
-        compute_pool_pda(CURVE_PROGRAM_ID, token1, token0)
+        compute_pool_pda(CURVE_PROGRAM_ID, token0, token1, owner),
+        compute_pool_pda(CURVE_PROGRAM_ID, token1, token0, owner)
+    );
+}
+
+#[test]
+fn different_owners_have_distinct_pool_pdas_for_the_same_pair() {
+    let token0 = AccountId::new([1; 32]);
+    let token1 = AccountId::new([2; 32]);
+    assert_ne!(
+        compute_pool_pda(CURVE_PROGRAM_ID, token0, token1, AccountId::new([3; 32]),),
+        compute_pool_pda(CURVE_PROGRAM_ID, token0, token1, AccountId::new([4; 32]),)
     );
 }

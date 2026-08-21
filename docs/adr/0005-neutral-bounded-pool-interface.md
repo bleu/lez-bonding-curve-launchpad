@@ -20,6 +20,6 @@ This is an intentional breaking PoC wire/state change. Compatibility aliases are
 
 ## Consequences
 
-`crates/pool` replaces the sale state machine, `PoolAccount` replaces `SaleAccount`, and pool PDA derivation hashes token0 then token1 without sorting. Pricing functions and tests use exact-input/exact-output vocabulary. `CONTEXT.md` defines the AMM/factory language boundary.
+`crates/pool` replaces the sale state machine, `PoolAccount` replaces `SaleAccount`, and pool PDA derivation hashes token0, token1, then owner without sorting. Including the owner prevents one direct caller from occupying the only PDA for a pair and blocking a different caller or factory from creating its pool. Pricing functions and tests use exact-input/exact-output vocabulary. `CONTEXT.md` defines the AMM/factory language boundary.
 
 The factory is not implemented in the current repository snapshot. When added, it must depend on this interface rather than adding launch allocation fields back to pool state.

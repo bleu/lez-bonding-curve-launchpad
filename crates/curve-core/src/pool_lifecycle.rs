@@ -32,6 +32,7 @@ pub fn close_pool(
             curve_program_id,
             pool_account.token0_definition_id,
             pool_account.token1_definition_id,
+            pool_account.owner,
         ),
         "Pool account ID does not match PDA"
     );
@@ -64,6 +65,7 @@ pub fn withdraw_reserves(
             curve_program_id,
             pool_account.token0_definition_id,
             pool_account.token1_definition_id,
+            pool_account.owner,
         ),
         "Pool account ID does not match PDA"
     );

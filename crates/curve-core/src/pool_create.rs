@@ -47,7 +47,12 @@ pub fn create_pool(
     );
     assert_eq!(
         pool.account_id,
-        compute_pool_pda(curve_program_id, token0_definition_id, token1_definition_id),
+        compute_pool_pda(
+            curve_program_id,
+            token0_definition_id,
+            token1_definition_id,
+            owner,
+        ),
         "Pool account ID does not match PDA"
     );
 
@@ -73,6 +78,7 @@ pub fn create_pool(
             Claim::Pda(compute_pool_pda_seed(
                 token0_definition_id,
                 token1_definition_id,
+                owner,
             )),
         )],
         PoolFunding {
