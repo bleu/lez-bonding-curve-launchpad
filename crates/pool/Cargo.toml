@@ -1,10 +1,10 @@
 [package]
-name = "sale"
+name = "pool"
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 
-# `curve-math` and `borsh` only. No `lee_core`: the state machine must stay
+# `curve-math` and `borsh` only. No `lee_core`: the pool state machine must stay
 # testable without account fixtures or a sequencer.
 [dependencies]
 borsh.workspace = true

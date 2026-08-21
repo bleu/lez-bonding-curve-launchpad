@@ -6,7 +6,7 @@ Status: accepted
 
 The GTM-514 solvency review sharpened two obligations that the earlier fee and
 arithmetic ADRs did not satisfy. A single protocol fee cannot represent a fee
-retained by the sale, and quoting every trade against initial `k` lets a later trade
+retained by the pool, and quoting every trade against initial `k` lets a later trade
 consume accumulated rounding surplus. The required invariant is stronger: the
 actual virtual-reserve product never decreases, while stored `k` remains immutable
 as its creation-time lower bound.
@@ -27,25 +27,25 @@ For a gross input and combined rate, the state machine:
    `floor(combined_fee * protocol_fee_bps / total_fee_bps)`.
 3. Assigns the remainder to the pool fee.
 4. Prices with the effective input after the combined fee.
-5. Adds the pool fee to the matching virtual and real sale reserve; the protocol
+5. Adds the pool fee to the matching virtual and real pool reserve; the protocol
    fee leaves for the treasury.
 
 The proportional floor gives a deterministic split, preserves the exact combined
-fee, and gives any indivisible remainder to the sale rather than charging another
-unit. On a buy the input asset is collateral. On a sell the input asset is the sale
-token, so handlers send the protocol fee to the treasury holding for that token.
+fee, and gives any indivisible remainder to the pool rather than charging another
+unit. The rule is direction-neutral: token0 or token1 can be input, and handlers
+send the protocol fee to the treasury holding for that input token.
 
-Pricing uses the current `Vt * Vc`, not stored `k`. Every multiplication is checked.
-If the current or proposed product does not fit `u128`, the transition rejects
-without mutation. Accepted trades therefore satisfy:
+Pricing uses the current `virtual_reserve0 * virtual_reserve1`, not stored `k`.
+Every multiplication is checked. If the current or proposed product does not fit
+`u128`, the transition rejects without mutation. Accepted trades therefore satisfy:
 
-- `new_Vt * new_Vc >= old_Vt * old_Vc`;
+- the new virtual-reserve product is at least the old product;
 - a nonzero retained pool fee makes that inequality strict;
-- `new_Vt * new_Vc >= k`; and
+- the new virtual-reserve product remains at least `k`; and
 - stored `k` never changes.
 
 Outputs still round down, exact-output inputs round up, and the combined fee rounds
-up. Zero-input buys and sells reject before quoting.
+up. Zero inputs and zero requested outputs reject before quoting.
 
 ## Consequences
 

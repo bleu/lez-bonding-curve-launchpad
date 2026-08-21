@@ -1,8 +1,8 @@
 //! The SDK. Hides wallet handling, message and witness construction, program ids, and
-//! account derivation behind lifecycle operations.
+//! account derivation behind pool and factory lifecycle operations.
 //!
 //! The CLI parses arguments and calls this crate, and nothing else. The private deshield
-//! to buy to re-shield flow also belongs here, because RFP-015 is explicit that the
+//! to swap to re-shield flow also belongs here, because RFP-015 is explicit that the
 //! program cannot enforce the re-shield and the SDK must.
 //!
 //! Grown by GTM-517 and GTM-521. What is here now is the account and program loading that

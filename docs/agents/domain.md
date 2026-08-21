@@ -24,7 +24,7 @@ This is a single-context repo.
 │   └── 0002-repo-layout-and-guest-shim.md
 ├── crates/
 │   ├── curve-math/
-│   ├── sale/
+│   ├── pool/
 │   ├── curve-core/
 │   └── launchpad-client/
 ├── cli/
@@ -44,10 +44,10 @@ When your output names a domain concept (an issue title, a refactor proposal, a
 hypothesis, a test name), use the term as defined in `CONTEXT.md`. Do not drift to
 synonyms the glossary explicitly avoids.
 
-RFP-015 supplies most of the ubiquitous language here: sale, sale reserve, DEX seed
-reserve, virtual token reserve, virtual collateral reserve, real collateral reserve,
-spot price, supply target, auto-close, graduation. Prefer those terms over
-AMM-generic ones. A sale is not a pool; the sale reserve is not liquidity.
+The curve is a neutral bounded AMM over an ordered token pair. Use pool, token0,
+token1, real reserve, virtual reserve, exact-input swap, and exact-output swap in
+the AMM layer. Sale, purchase, redemption, token-for-sale, collateral, and DEX-seed
+allocation belong only to the factory or launch-facing adapters.
 
 If the concept you need is not in the glossary yet, that is a signal — either you are
 inventing language the project does not use (reconsider) or there is a real gap (note

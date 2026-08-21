@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc d2df38828cc71d4bbc8471a1f68fe95039d6f539cf81d54bdfc09fdda2e2cc57 # shrinks to mut pool = Pool { virtual_reserve0: 11846, virtual_reserve1: 16882, k: 199984172, real_reserve0: 137680, real_reserve1: 1, close_timestamp: None, open: true, retired: false }, actions = [ExactInput { side: Token1, amount_in: 340282366920938463463374607431768211454, min_amount_out: 0, pool_fee_bps: 0, protocol_fee_bps: 1 }, ExactInput { side: Token0, amount_in: 2, min_amount_out: 0, pool_fee_bps: 1, protocol_fee_bps: 0 }]

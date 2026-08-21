@@ -5,7 +5,7 @@ use lee_core::{
     program::{AccountPostState, ChainedCall, ProgramId},
 };
 
-use crate::{Instruction, create_sale::create_sale, update_config::update_config};
+use crate::{Instruction, pool_create::create_pool, update_config::update_config};
 
 #[must_use]
 pub fn process_instruction(
@@ -36,11 +36,13 @@ pub fn process_instruction(
                 vec![],
             )
         }
-        Instruction::CreateSale {
-            sale_reserve,
-            dex_seed_reserve,
-            virtual_token_reserve,
-            virtual_collateral_reserve,
+        Instruction::CreatePool {
+            token0_amount,
+            token1_amount,
+            virtual_reserve0,
+            virtual_reserve1,
+            close_timestamp,
+            owner,
             curve_program_id,
         } => {
             assert_eq!(
@@ -48,34 +50,38 @@ pub fn process_instruction(
                 "Curve program ID does not match executing program"
             );
             let [
-                sale,
-                creator,
-                token_definition,
-                collateral_definition,
-                creator_token_ata,
-                sale_token_ata,
-                sale_collateral_ata,
+                pool,
+                owner_authority,
+                token0_definition,
+                token1_definition,
+                owner_token0_ata,
+                owner_token1_ata,
+                pool_token0_ata,
+                pool_token1_ata,
             ] = pre_states
                 .try_into()
-                .expect("CreateSale requires exactly seven accounts");
-            create_sale(
-                sale,
-                creator,
-                token_definition,
-                collateral_definition,
-                creator_token_ata,
-                sale_token_ata,
-                sale_collateral_ata,
-                sale_reserve,
-                dex_seed_reserve,
-                virtual_token_reserve,
-                virtual_collateral_reserve,
+                .expect("CreatePool requires exactly eight accounts");
+            create_pool(
+                pool,
+                owner_authority,
+                token0_definition,
+                token1_definition,
+                owner_token0_ata,
+                owner_token1_ata,
+                pool_token0_ata,
+                pool_token1_ata,
+                token0_amount,
+                token1_amount,
+                virtual_reserve0,
+                virtual_reserve1,
+                close_timestamp,
+                owner,
                 curve_program_id,
             )
         }
-        Instruction::Buy { .. }
-        | Instruction::Sell { .. }
-        | Instruction::Close
-        | Instruction::Withdraw => panic!("instruction handler is not implemented yet"),
+        Instruction::SwapExactInput { .. }
+        | Instruction::SwapExactOutput { .. }
+        | Instruction::ClosePool
+        | Instruction::WithdrawReserves => panic!("instruction handler is not implemented yet"),
     }
 }

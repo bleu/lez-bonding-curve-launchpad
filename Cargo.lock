@@ -650,6 +650,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
+name = "clock_core"
+version = "0.1.0"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?rev=a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a#a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a"
+dependencies = [
+ "borsh",
+ "lee_core",
+]
+
+[[package]]
 name = "cmov"
 version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -775,11 +784,12 @@ version = "0.1.0"
 dependencies = [
  "associated_token_account_core",
  "borsh",
+ "clock_core",
  "lee",
  "lee_core",
+ "pool",
  "programs",
  "risc0-zkvm",
- "sale",
  "serde",
  "token_core",
 ]
@@ -1931,6 +1941,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pool"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "curve-math",
+ "proptest",
+]
+
+[[package]]
 name = "portable-atomic"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2534,15 +2553,6 @@ dependencies = [
  "thiserror",
  "toml",
  "yaml-rust2",
-]
-
-[[package]]
-name = "sale"
-version = "0.1.0"
-dependencies = [
- "borsh",
- "curve-math",
- "proptest",
 ]
 
 [[package]]

@@ -9,13 +9,16 @@ use lee_core::{
     program::{Claim, ProgramId},
 };
 
-use sale::Sale;
+use pool::Pool;
 use token_core::{TokenDefinition, TokenHolding};
 
 use crate::{
-    ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID, Config, GENESIS_ADMIN, Instruction, SaleAccount,
-    compute_config_pda, compute_config_pda_seed, compute_creator_commitment, compute_sale_pda,
-    create_sale::create_sale, update_config::update_config,
+    ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID, Config, GENESIS_ADMIN, Instruction, PoolAccount,
+    compute_config_pda, compute_config_pda_seed, compute_pool_pda,
+    pool_create::create_pool,
+    pool_lifecycle::{close_pool, withdraw_reserves},
+    pool_swap::{swap_exact_input, swap_exact_output},
+    update_config::update_config,
 };
 
 const CURVE_PROGRAM_ID: ProgramId = [7; 8];
@@ -97,9 +100,9 @@ fn ata(owner: AccountId, definition: AccountId, account: Account) -> AccountWith
     }
 }
 
-fn creator_source_ata(creator: AccountId, token_definition_id: AccountId) -> AccountWithMetadata {
+fn owner_source_ata(owner: AccountId, token_definition_id: AccountId) -> AccountWithMetadata {
     ata(
-        creator,
+        owner,
         token_definition_id,
         Account {
             program_owner: TOKEN_PROGRAM_ID,
@@ -112,80 +115,75 @@ fn creator_source_ata(creator: AccountId, token_definition_id: AccountId) -> Acc
     )
 }
 
-struct CreateSaleAccounts {
-    sale: AccountWithMetadata,
-    creator: AccountWithMetadata,
-    token_definition: AccountWithMetadata,
-    collateral_definition: AccountWithMetadata,
-    creator_token_ata: AccountWithMetadata,
-    sale_token_ata: AccountWithMetadata,
-    sale_collateral_ata: AccountWithMetadata,
+struct CreatePoolAccounts {
+    pool: AccountWithMetadata,
+    owner: AccountWithMetadata,
+    token0_definition: AccountWithMetadata,
+    token1_definition: AccountWithMetadata,
+    owner_token0_ata: AccountWithMetadata,
+    owner_token1_ata: AccountWithMetadata,
+    pool_token0_ata: AccountWithMetadata,
+    pool_token1_ata: AccountWithMetadata,
 }
 
-fn valid_create_sale_accounts() -> CreateSaleAccounts {
-    let creator = signer(AccountId::new([3; 32]));
-    let token_definition_id = AccountId::new([4; 32]);
-    let collateral_definition_id = AccountId::new([5; 32]);
-    let sale_id = compute_sale_pda(
+fn valid_create_pool_accounts() -> CreatePoolAccounts {
+    let owner = signer(AccountId::new([3; 32]));
+    let token0_definition_id = AccountId::new([4; 32]);
+    let token1_definition_id = AccountId::new([5; 32]);
+    let pool_id = compute_pool_pda(
         CURVE_PROGRAM_ID,
-        token_definition_id,
-        collateral_definition_id,
+        token0_definition_id,
+        token1_definition_id,
+        owner.account_id,
     );
-    CreateSaleAccounts {
-        sale: AccountWithMetadata {
-            account_id: sale_id,
+    CreatePoolAccounts {
+        pool: AccountWithMetadata {
+            account_id: pool_id,
             ..uninitialized_config()
         },
-        creator_token_ata: creator_source_ata(creator.account_id, token_definition_id),
-        creator,
-        token_definition: token_definition(token_definition_id),
-        collateral_definition: token_definition(collateral_definition_id),
-        sale_token_ata: ata(sale_id, token_definition_id, Account::default()),
-        sale_collateral_ata: ata(sale_id, collateral_definition_id, Account::default()),
+        owner_token0_ata: owner_source_ata(owner.account_id, token0_definition_id),
+        owner_token1_ata: owner_source_ata(owner.account_id, token1_definition_id),
+        owner,
+        token0_definition: token_definition(token0_definition_id),
+        token1_definition: token_definition(token1_definition_id),
+        pool_token0_ata: ata(pool_id, token0_definition_id, Account::default()),
+        pool_token1_ata: ata(pool_id, token1_definition_id, Account::default()),
     }
 }
 
-fn create_sale_with_accounts(
-    accounts: CreateSaleAccounts,
-    sale_reserve: u128,
-    dex_seed_reserve: u128,
-    virtual_token_reserve: u128,
-    virtual_collateral_reserve: u128,
+fn create_pool_with_accounts(
+    accounts: CreatePoolAccounts,
+    token0_amount: u128,
+    token1_amount: u128,
+    virtual_reserve0: u128,
+    virtual_reserve1: u128,
 ) {
-    let _result = create_sale(
-        accounts.sale,
-        accounts.creator,
-        accounts.token_definition,
-        accounts.collateral_definition,
-        accounts.creator_token_ata,
-        accounts.sale_token_ata,
-        accounts.sale_collateral_ata,
-        sale_reserve,
-        dex_seed_reserve,
-        virtual_token_reserve,
-        virtual_collateral_reserve,
+    let owner_id = accounts.owner.account_id;
+    let _result = create_pool(
+        accounts.pool,
+        accounts.owner,
+        accounts.token0_definition,
+        accounts.token1_definition,
+        accounts.owner_token0_ata,
+        accounts.owner_token1_ata,
+        accounts.pool_token0_ata,
+        accounts.pool_token1_ata,
+        token0_amount,
+        token1_amount,
+        virtual_reserve0,
+        virtual_reserve1,
+        Some(42),
+        owner_id,
         CURVE_PROGRAM_ID,
     );
 }
 
-fn create_valid_sale_with(creator: AccountWithMetadata, creator_token_ata: AccountWithMetadata) {
-    let mut accounts = valid_create_sale_accounts();
-    accounts.creator = creator;
-    accounts.creator_token_ata = creator_token_ata;
-    create_sale_with_accounts(accounts, 800, 200, 1_000, 100);
-}
-
-#[should_panic(expected = "Creator authorization is missing")]
+#[should_panic(expected = "Owner authorization is missing")]
 #[test]
-fn create_sale_rejects_a_creator_without_authorization() {
-    let creator_id = AccountId::new([3; 32]);
-    create_valid_sale_with(
-        AccountWithMetadata {
-            is_authorized: false,
-            ..signer(creator_id)
-        },
-        creator_source_ata(creator_id, AccountId::new([4; 32])),
-    );
+fn create_pool_rejects_an_owner_without_authorization() {
+    let mut accounts = valid_create_pool_accounts();
+    accounts.owner.is_authorized = false;
+    create_pool_with_accounts(accounts, 800, 25, 1_000, 100);
 }
 
 #[test]
@@ -195,109 +193,96 @@ fn trusted_ata_program_id_matches_the_pinned_lez_guest() {
 
 #[should_panic(expected = "ATA account ID does not match expected derivation")]
 #[test]
-fn create_sale_rejects_a_source_ata_not_owned_by_the_creator() {
-    let creator_id = AccountId::new([3; 32]);
+fn create_pool_rejects_a_source_ata_not_owned_by_the_owner() {
     let intruder_id = AccountId::new([6; 32]);
-    create_valid_sale_with(
-        signer(creator_id),
-        creator_source_ata(intruder_id, AccountId::new([4; 32])),
-    );
+    let mut accounts = valid_create_pool_accounts();
+    accounts.owner_token0_ata = owner_source_ata(intruder_id, AccountId::new([4; 32]));
+    create_pool_with_accounts(accounts, 800, 25, 1_000, 100);
 }
 
-#[should_panic(expected = "Sale account ID does not match PDA")]
+#[should_panic(expected = "Pool account ID does not match PDA")]
 #[test]
-fn create_sale_rejects_a_forged_sale_account() {
-    let mut accounts = valid_create_sale_accounts();
-    accounts.sale.account_id = AccountId::new([6; 32]);
-    create_sale_with_accounts(accounts, 800, 200, 1_000, 100);
-}
-
-#[should_panic(expected = "ATA account ID does not match expected derivation")]
-#[test]
-fn create_sale_rejects_a_forged_sale_token_ata() {
-    let mut accounts = valid_create_sale_accounts();
-    accounts.sale_token_ata.account_id = AccountId::new([6; 32]);
-    create_sale_with_accounts(accounts, 800, 200, 1_000, 100);
+fn create_pool_rejects_a_forged_pool_account() {
+    let mut accounts = valid_create_pool_accounts();
+    accounts.pool.account_id = AccountId::new([6; 32]);
+    create_pool_with_accounts(accounts, 800, 25, 1_000, 100);
 }
 
 #[should_panic(expected = "ATA account ID does not match expected derivation")]
 #[test]
-fn create_sale_rejects_a_forged_sale_collateral_ata() {
-    let mut accounts = valid_create_sale_accounts();
-    accounts.sale_collateral_ata.account_id = AccountId::new([6; 32]);
-    create_sale_with_accounts(accounts, 800, 200, 1_000, 100);
+fn create_pool_rejects_a_forged_pool_token0_ata() {
+    let mut accounts = valid_create_pool_accounts();
+    accounts.pool_token0_ata.account_id = AccountId::new([6; 32]);
+    create_pool_with_accounts(accounts, 800, 25, 1_000, 100);
 }
 
-#[should_panic(expected = "Sale account is already initialized")]
+#[should_panic(expected = "ATA account ID does not match expected derivation")]
 #[test]
-fn create_sale_rejects_reinitializing_an_existing_sale() {
-    let mut accounts = valid_create_sale_accounts();
-    accounts.sale.account.program_owner = CURVE_PROGRAM_ID;
-    create_sale_with_accounts(accounts, 800, 200, 1_000, 100);
+fn create_pool_rejects_a_forged_pool_token1_ata() {
+    let mut accounts = valid_create_pool_accounts();
+    accounts.pool_token1_ata.account_id = AccountId::new([6; 32]);
+    create_pool_with_accounts(accounts, 800, 25, 1_000, 100);
 }
 
-#[should_panic(expected = "sale reserve plus DEX seed reserve overflows")]
+#[should_panic(expected = "Pool is already initialized")]
 #[test]
-fn create_sale_rejects_a_deposit_that_cannot_fit_in_u128() {
-    create_sale_with_accounts(valid_create_sale_accounts(), 800, u128::MAX, 1_000, 100);
+fn create_pool_rejects_reinitializing_an_existing_pool() {
+    let mut accounts = valid_create_pool_accounts();
+    accounts.pool.account.program_owner = CURVE_PROGRAM_ID;
+    create_pool_with_accounts(accounts, 800, 25, 1_000, 100);
 }
 
-#[should_panic(expected = "invalid sale parameters")]
+#[should_panic(expected = "Pool parameters are invalid")]
 #[test]
-fn create_sale_enforces_the_sale_parameter_validation() {
-    create_sale_with_accounts(valid_create_sale_accounts(), 0, 200, 1_000, 100);
+fn create_pool_enforces_pool_parameter_validation() {
+    create_pool_with_accounts(valid_create_pool_accounts(), 800, 25, 0, 100);
 }
 
 #[test]
-fn creator_can_open_a_sale_and_atomically_fund_its_ata_reserves() {
-    let creator = signer(AccountId::new([3; 32]));
-    let token_definition_id = AccountId::new([4; 32]);
-    let collateral_definition_id = AccountId::new([5; 32]);
-    let sale_id = compute_sale_pda(
-        CURVE_PROGRAM_ID,
-        token_definition_id,
-        collateral_definition_id,
-    );
-    let sale = AccountWithMetadata {
-        account_id: sale_id,
-        ..uninitialized_config()
-    };
-    let sale_token_ata = ata(sale_id, token_definition_id, Account::default());
-    let sale_collateral_ata = ata(sale_id, collateral_definition_id, Account::default());
-
-    let (post_states, chained_calls) = create_sale(
-        sale,
-        creator.clone(),
-        token_definition(token_definition_id),
-        token_definition(collateral_definition_id),
-        creator_source_ata(creator.account_id, token_definition_id),
-        sale_token_ata.clone(),
-        sale_collateral_ata,
+fn owner_can_open_a_pool_and_atomically_fund_both_ata_reserves() {
+    let accounts = valid_create_pool_accounts();
+    let owner_id = accounts.owner.account_id;
+    let token0_id = accounts.token0_definition.account_id;
+    let token1_id = accounts.token1_definition.account_id;
+    let pool_token0_ata = accounts.pool_token0_ata.clone();
+    let pool_token1_ata = accounts.pool_token1_ata.clone();
+    let (post_states, chained_calls) = create_pool(
+        accounts.pool,
+        accounts.owner,
+        accounts.token0_definition,
+        accounts.token1_definition,
+        accounts.owner_token0_ata,
+        accounts.owner_token1_ata,
+        accounts.pool_token0_ata,
+        accounts.pool_token1_ata,
         800,
-        200,
+        25,
         1_000,
         100,
+        Some(42),
+        owner_id,
         CURVE_PROGRAM_ID,
     );
 
-    let sale_account = SaleAccount::try_from(&post_states[0].account().data)
-        .expect("sale post-state holds a valid sale");
-    assert_eq!(sale_account.sale.k, 100_000);
-    assert_eq!(sale_account.sale.sale_reserve, 800);
-    assert_eq!(sale_account.sale.dex_seed_reserve, 200);
+    let pool_account = PoolAccount::try_from(&post_states[0].account().data)
+        .expect("pool post-state holds a valid pool");
+    assert_eq!(pool_account.pool.k, 100_000);
     assert_eq!(
-        sale_account.creator_commitment,
-        compute_creator_commitment(creator.account_id, sale_id)
+        (
+            pool_account.pool.real_reserve0,
+            pool_account.pool.real_reserve1
+        ),
+        (800, 25)
     );
+    assert_eq!(pool_account.owner, owner_id);
     assert_eq!(
         post_states[0].required_claim(),
-        Some(Claim::Pda(crate::compute_sale_pda_seed(
-            token_definition_id,
-            collateral_definition_id,
+        Some(Claim::Pda(crate::compute_pool_pda_seed(
+            token0_id, token1_id, owner_id,
         )))
     );
 
-    assert_eq!(chained_calls.len(), 3);
+    assert_eq!(chained_calls.len(), 4);
     for call in &chained_calls[..2] {
         assert_eq!(call.program_id, ATA_PROGRAM_ID);
         let instruction: AtaInstruction =
@@ -309,26 +294,70 @@ fn creator_can_open_a_sale_and_atomically_fund_its_ata_reserves() {
             }
         ));
     }
-    let transfer = &chained_calls[2];
-    assert_eq!(transfer.program_id, ATA_PROGRAM_ID);
+    for (transfer, amount, destination, definition_id) in [
+        (
+            &chained_calls[2],
+            800,
+            pool_token0_ata.account_id,
+            token0_id,
+        ),
+        (&chained_calls[3], 25, pool_token1_ata.account_id, token1_id),
+    ] {
+        assert_eq!(transfer.program_id, ATA_PROGRAM_ID);
+        let instruction: AtaInstruction = risc0_zkvm::serde::from_slice(&transfer.instruction_data)
+            .expect("ATA instruction parses");
+        assert!(
+            matches!(instruction, AtaInstruction::Transfer { ata_program_id: ATA_PROGRAM_ID, amount: actual } if actual == amount)
+        );
+        assert_eq!(transfer.pre_states[2].account_id, destination);
+        assert_eq!(
+            TokenHolding::try_from(&transfer.pre_states[2].account.data)
+                .expect("funding recipient is initialized"),
+            TokenHolding::Fungible {
+                definition_id,
+                balance: 0
+            }
+        );
+    }
+}
+
+#[test]
+fn zero_initial_reserve_creates_its_ata_without_emitting_a_zero_transfer() {
+    let accounts = valid_create_pool_accounts();
+    let owner_id = accounts.owner.account_id;
+    let (_, chained_calls) = create_pool(
+        accounts.pool,
+        accounts.owner,
+        accounts.token0_definition,
+        accounts.token1_definition,
+        accounts.owner_token0_ata,
+        accounts.owner_token1_ata,
+        accounts.pool_token0_ata,
+        accounts.pool_token1_ata,
+        800,
+        0,
+        1_000,
+        100,
+        None,
+        owner_id,
+        CURVE_PROGRAM_ID,
+    );
+
+    assert_eq!(
+        chained_calls.len(),
+        3,
+        "two ATA creates and one funding transfer"
+    );
     let instruction: AtaInstruction =
-        risc0_zkvm::serde::from_slice(&transfer.instruction_data).expect("ATA instruction parses");
+        risc0_zkvm::serde::from_slice(&chained_calls[2].instruction_data)
+            .expect("ATA transfer parses");
     assert!(matches!(
         instruction,
         AtaInstruction::Transfer {
             ata_program_id: ATA_PROGRAM_ID,
-            amount: 1_000,
+            amount: 800,
         }
     ));
-    assert_eq!(transfer.pre_states[2].account_id, sale_token_ata.account_id);
-    assert_eq!(
-        TokenHolding::try_from(&transfer.pre_states[2].account.data)
-            .expect("funding recipient is initialized"),
-        TokenHolding::Fungible {
-            definition_id: token_definition_id,
-            balance: 0,
-        }
-    );
 }
 
 #[should_panic(expected = "Authority is not the config admin")]
@@ -421,7 +450,7 @@ fn update_config_rejects_combined_fees_above_the_denominator() {
     );
 }
 
-// Zero is RFP text ("sale creation free" plus a free curve is a legal config), and
+// Zero is legal (pool creation remains free and a fee-free pool is valid), and
 // 10,000 is the denominator itself.
 #[test]
 fn fee_boundaries_are_legal() {
@@ -518,17 +547,208 @@ fn first_update_config_initializes_the_config() {
 }
 
 #[test]
-fn sale_state_round_trips_through_account_data() {
-    let sale_account = SaleAccount {
-        token_definition_id: AccountId::new([1; 32]),
-        collateral_definition_id: AccountId::new([2; 32]),
-        creator_commitment: [3; 32],
-        sale: Sale::create(800, 200, 1000, 100).expect("valid sale"),
+fn pool_state_round_trips_with_ordered_tokens_owner_and_optional_expiry() {
+    let pool_account = PoolAccount {
+        token0_definition_id: AccountId::new([1; 32]),
+        token1_definition_id: AccountId::new([2; 32]),
+        owner: AccountId::new([3; 32]),
+        pool: Pool::create(800, 25, 1000, 100, Some(42)).expect("valid pool"),
     };
-    let data = Data::from(&sale_account);
+    let data = Data::from(&pool_account);
     assert_eq!(
-        SaleAccount::try_from(&data).expect("data parses"),
-        sale_account
+        PoolAccount::try_from(&data).expect("data parses"),
+        pool_account
+    );
+}
+
+#[test]
+fn stored_pool_owner_can_close_the_pool() {
+    let owner = AccountId::new([3; 32]);
+    let token0 = AccountId::new([1; 32]);
+    let token1 = AccountId::new([2; 32]);
+    let pool_account = PoolAccount {
+        token0_definition_id: token0,
+        token1_definition_id: token1,
+        owner,
+        pool: Pool::create(800, 25, 1000, 100, None).expect("valid pool"),
+    };
+    let pool = AccountWithMetadata {
+        account: Account {
+            program_owner: CURVE_PROGRAM_ID,
+            data: Data::from(&pool_account),
+            ..Account::default()
+        },
+        is_authorized: false,
+        account_id: compute_pool_pda(CURVE_PROGRAM_ID, token0, token1, owner),
+    };
+
+    let [post]: [_; 1] = close_pool(pool, signer(owner), CURVE_PROGRAM_ID)
+        .try_into()
+        .expect("one post state");
+    let closed = PoolAccount::try_from(&post.account().data).expect("valid pool state");
+    assert!(!closed.pool.open);
+}
+
+#[should_panic(expected = "Authority is not the pool owner")]
+#[test]
+fn an_unrelated_signer_cannot_close_the_pool() {
+    let owner = AccountId::new([3; 32]);
+    let token0 = AccountId::new([1; 32]);
+    let token1 = AccountId::new([2; 32]);
+    let pool_account = PoolAccount {
+        token0_definition_id: token0,
+        token1_definition_id: token1,
+        owner,
+        pool: Pool::create(800, 25, 1000, 100, None).expect("valid pool"),
+    };
+    let pool = AccountWithMetadata {
+        account: Account {
+            program_owner: CURVE_PROGRAM_ID,
+            data: Data::from(&pool_account),
+            ..Account::default()
+        },
+        is_authorized: false,
+        account_id: compute_pool_pda(CURVE_PROGRAM_ID, token0, token1, owner),
+    };
+    let _ = close_pool(pool, intruder_signer(), CURVE_PROGRAM_ID);
+}
+
+#[test]
+fn expired_pool_owner_can_withdraw_both_reserves_without_closing_first() {
+    let owner = AccountId::new([3; 32]);
+    let token0 = AccountId::new([1; 32]);
+    let token1 = AccountId::new([2; 32]);
+    let pool_account = PoolAccount {
+        token0_definition_id: token0,
+        token1_definition_id: token1,
+        owner,
+        pool: Pool::create(800, 25, 1000, 100, Some(42)).expect("valid pool"),
+    };
+    let pool = AccountWithMetadata {
+        account: Account {
+            program_owner: CURVE_PROGRAM_ID,
+            data: Data::from(&pool_account),
+            ..Account::default()
+        },
+        is_authorized: false,
+        account_id: compute_pool_pda(CURVE_PROGRAM_ID, token0, token1, owner),
+    };
+    let clock = AccountWithMetadata {
+        account: Account {
+            data: Data::try_from(
+                clock_core::ClockAccountData {
+                    block_id: 7,
+                    timestamp: 42,
+                }
+                .to_bytes(),
+            )
+            .expect("clock data fits"),
+            ..Account::default()
+        },
+        is_authorized: false,
+        account_id: clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID,
+    };
+
+    let (posts, withdrawn) = withdraw_reserves(pool, signer(owner), Some(clock), CURVE_PROGRAM_ID);
+    assert_eq!(
+        (withdrawn.token0_amount, withdrawn.token1_amount),
+        (800, 25)
+    );
+    let [post]: [_; 1] = posts.try_into().expect("one post state");
+    let retired = PoolAccount::try_from(&post.account().data).expect("valid pool state");
+    assert!(retired.pool.retired);
+}
+
+#[test]
+fn exact_input_handler_selects_direction_and_pairs_the_fee_with_token_in() {
+    let owner = AccountId::new([3; 32]);
+    let token0 = AccountId::new([1; 32]);
+    let token1 = AccountId::new([2; 32]);
+    let pool_account = PoolAccount {
+        token0_definition_id: token0,
+        token1_definition_id: token1,
+        owner,
+        pool: Pool::create(800, 100, 1000, 100, None).expect("valid pool"),
+    };
+    let pool = AccountWithMetadata {
+        account: Account {
+            program_owner: CURVE_PROGRAM_ID,
+            data: Data::from(&pool_account),
+            ..Account::default()
+        },
+        is_authorized: false,
+        account_id: compute_pool_pda(CURVE_PROGRAM_ID, token0, token1, owner),
+    };
+
+    let (posts, settlement) = swap_exact_input(
+        pool,
+        initialized_config(new_admin()),
+        None,
+        250,
+        19,
+        token0,
+        CURVE_PROGRAM_ID,
+    );
+    assert_eq!(settlement.token_in, token0);
+    assert_eq!(settlement.token_out, token1);
+    assert_eq!(settlement.effective_amount_in, 243);
+    assert_eq!(settlement.pool_fee, 5);
+    assert_eq!(settlement.protocol_fee, 2);
+    assert_eq!(settlement.treasury, new_treasury());
+    let [post]: [_; 1] = posts.try_into().expect("one post state");
+    let updated = PoolAccount::try_from(&post.account().data).expect("valid pool state");
+    assert_eq!(
+        (updated.pool.real_reserve0, updated.pool.real_reserve1),
+        (1048, 81)
+    );
+}
+
+#[test]
+fn exact_output_handler_caps_fee_inclusive_input_in_the_reverse_direction() {
+    let owner = AccountId::new([3; 32]);
+    let token0 = AccountId::new([1; 32]);
+    let token1 = AccountId::new([2; 32]);
+    let pool_account = PoolAccount {
+        token0_definition_id: token0,
+        token1_definition_id: token1,
+        owner,
+        pool: Pool::create(800, 100, 1000, 100, None).expect("valid pool"),
+    };
+    let pool = AccountWithMetadata {
+        account: Account {
+            program_owner: CURVE_PROGRAM_ID,
+            data: Data::from(&pool_account),
+            ..Account::default()
+        },
+        is_authorized: false,
+        account_id: compute_pool_pda(CURVE_PROGRAM_ID, token0, token1, owner),
+    };
+    let config = AccountWithMetadata {
+        account: Account {
+            program_owner: CURVE_PROGRAM_ID,
+            data: Data::from(&Config {
+                admin: new_admin(),
+                pool_fee_bps: 1_000,
+                protocol_fee_bps: 0,
+                treasury: new_treasury(),
+            }),
+            ..Account::default()
+        },
+        is_authorized: false,
+        account_id: compute_config_pda(CURVE_PROGRAM_ID),
+    };
+
+    let (_, settlement) = swap_exact_output(pool, config, None, 200, 28, token1, CURVE_PROGRAM_ID);
+    assert_eq!(settlement.token_in, token1);
+    assert_eq!(settlement.token_out, token0);
+    assert_eq!(
+        (
+            settlement.amount_in,
+            settlement.amount_out,
+            settlement.pool_fee,
+            settlement.protocol_fee,
+        ),
+        (28, 200, 3, 0)
     );
 }
 
@@ -542,23 +762,27 @@ fn every_instruction_survives_the_guest_wire_format() {
             protocol_fee_bps: 100,
             treasury: new_treasury(),
         },
-        Instruction::CreateSale {
-            sale_reserve: 800,
-            dex_seed_reserve: 200,
-            virtual_token_reserve: 1000,
-            virtual_collateral_reserve: 100,
+        Instruction::CreatePool {
+            token0_amount: 800,
+            token1_amount: 25,
+            virtual_reserve0: 1000,
+            virtual_reserve1: 100,
+            close_timestamp: Some(42),
+            owner: AccountId::new([3; 32]),
             curve_program_id: [7; 8],
         },
-        Instruction::Buy {
-            collateral_in: 25,
-            min_tokens_out: 190,
+        Instruction::SwapExactInput {
+            amount_in: 25,
+            min_amount_out: 190,
+            token_in: AccountId::new([1; 32]),
         },
-        Instruction::Sell {
-            tokens_in: 250,
-            min_collateral_out: 18,
+        Instruction::SwapExactOutput {
+            amount_out: 250,
+            max_amount_in: 18,
+            token_in: AccountId::new([2; 32]),
         },
-        Instruction::Close,
-        Instruction::Withdraw,
+        Instruction::ClosePool,
+        Instruction::WithdrawReserves,
     ];
     for instruction in instructions {
         let words = risc0_zkvm::serde::to_vec(&instruction).expect("instruction serialises");
@@ -568,12 +792,22 @@ fn every_instruction_survives_the_guest_wire_format() {
 }
 
 #[test]
-fn the_sale_pda_hashes_the_pair_in_fixed_order() {
-    // Token and collateral are different roles: swapping them is a different sale.
-    let token = AccountId::new([1; 32]);
-    let collateral = AccountId::new([2; 32]);
+fn the_pool_pda_hashes_the_pair_in_fixed_order() {
+    let owner = AccountId::new([3; 32]);
+    let token0 = AccountId::new([1; 32]);
+    let token1 = AccountId::new([2; 32]);
     assert_ne!(
-        compute_sale_pda(CURVE_PROGRAM_ID, token, collateral),
-        compute_sale_pda(CURVE_PROGRAM_ID, collateral, token)
+        compute_pool_pda(CURVE_PROGRAM_ID, token0, token1, owner),
+        compute_pool_pda(CURVE_PROGRAM_ID, token1, token0, owner)
+    );
+}
+
+#[test]
+fn different_owners_have_distinct_pool_pdas_for_the_same_pair() {
+    let token0 = AccountId::new([1; 32]);
+    let token1 = AccountId::new([2; 32]);
+    assert_ne!(
+        compute_pool_pda(CURVE_PROGRAM_ID, token0, token1, AccountId::new([3; 32]),),
+        compute_pool_pda(CURVE_PROGRAM_ID, token0, token1, AccountId::new([4; 32]),)
     );
 }
