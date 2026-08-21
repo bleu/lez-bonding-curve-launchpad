@@ -1,19 +1,26 @@
 //! AMM-style handler tests: hand-built `AccountWithMetadata` fixtures, direct handler
 //! calls, `#[should_panic]` on the gates. Mirrors `lez/programs/amm/src/tests.rs`.
 
+use associated_token_account_core::{
+    Instruction as AtaInstruction, compute_ata_seed, get_associated_token_account_id,
+};
 use lee_core::{
     account::{Account, AccountId, AccountWithMetadata, Data},
     program::{Claim, ProgramId},
 };
 
 use sale::Sale;
+use token_core::{TokenDefinition, TokenHolding};
 
 use crate::{
-    Config, GENESIS_ADMIN, Instruction, SaleAccount, compute_config_pda, compute_config_pda_seed,
-    compute_sale_pda, update_config::update_config,
+    ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID, Config, GENESIS_ADMIN, Instruction, SaleAccount,
+    compute_config_pda, compute_config_pda_seed, compute_creator_commitment, compute_sale_pda,
+    create_sale::create_sale, update_config::update_config,
 };
 
 const CURVE_PROGRAM_ID: ProgramId = [7; 8];
+const ATA_PROGRAM_ID: ProgramId = ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID;
+const TOKEN_PROGRAM_ID: ProgramId = [9; 8];
 
 fn uninitialized_config() -> AccountWithMetadata {
     AccountWithMetadata {
@@ -63,6 +70,265 @@ fn new_treasury() -> AccountId {
 
 fn intruder_signer() -> AccountWithMetadata {
     signer(AccountId::new([9; 32]))
+}
+
+fn token_definition(account_id: AccountId) -> AccountWithMetadata {
+    AccountWithMetadata {
+        account: Account {
+            program_owner: TOKEN_PROGRAM_ID,
+            data: Data::from(&TokenDefinition::Fungible {
+                name: "Token".into(),
+                total_supply: 10_000,
+                metadata_id: None,
+            }),
+            ..Account::default()
+        },
+        is_authorized: false,
+        account_id,
+    }
+}
+
+fn ata(owner: AccountId, definition: AccountId, account: Account) -> AccountWithMetadata {
+    let seed = compute_ata_seed(owner, definition);
+    AccountWithMetadata {
+        account,
+        is_authorized: false,
+        account_id: get_associated_token_account_id(&ATA_PROGRAM_ID, &seed),
+    }
+}
+
+fn creator_source_ata(creator: AccountId, token_definition_id: AccountId) -> AccountWithMetadata {
+    ata(
+        creator,
+        token_definition_id,
+        Account {
+            program_owner: TOKEN_PROGRAM_ID,
+            data: Data::from(&TokenHolding::Fungible {
+                definition_id: token_definition_id,
+                balance: 1_000,
+            }),
+            ..Account::default()
+        },
+    )
+}
+
+struct CreateSaleAccounts {
+    sale: AccountWithMetadata,
+    creator: AccountWithMetadata,
+    token_definition: AccountWithMetadata,
+    collateral_definition: AccountWithMetadata,
+    creator_token_ata: AccountWithMetadata,
+    sale_token_ata: AccountWithMetadata,
+    sale_collateral_ata: AccountWithMetadata,
+}
+
+fn valid_create_sale_accounts() -> CreateSaleAccounts {
+    let creator = signer(AccountId::new([3; 32]));
+    let token_definition_id = AccountId::new([4; 32]);
+    let collateral_definition_id = AccountId::new([5; 32]);
+    let sale_id = compute_sale_pda(
+        CURVE_PROGRAM_ID,
+        token_definition_id,
+        collateral_definition_id,
+    );
+    CreateSaleAccounts {
+        sale: AccountWithMetadata {
+            account_id: sale_id,
+            ..uninitialized_config()
+        },
+        creator_token_ata: creator_source_ata(creator.account_id, token_definition_id),
+        creator,
+        token_definition: token_definition(token_definition_id),
+        collateral_definition: token_definition(collateral_definition_id),
+        sale_token_ata: ata(sale_id, token_definition_id, Account::default()),
+        sale_collateral_ata: ata(sale_id, collateral_definition_id, Account::default()),
+    }
+}
+
+fn create_sale_with_accounts(
+    accounts: CreateSaleAccounts,
+    sale_reserve: u128,
+    dex_seed_reserve: u128,
+    virtual_token_reserve: u128,
+    virtual_collateral_reserve: u128,
+) {
+    let _result = create_sale(
+        accounts.sale,
+        accounts.creator,
+        accounts.token_definition,
+        accounts.collateral_definition,
+        accounts.creator_token_ata,
+        accounts.sale_token_ata,
+        accounts.sale_collateral_ata,
+        sale_reserve,
+        dex_seed_reserve,
+        virtual_token_reserve,
+        virtual_collateral_reserve,
+        CURVE_PROGRAM_ID,
+    );
+}
+
+fn create_valid_sale_with(creator: AccountWithMetadata, creator_token_ata: AccountWithMetadata) {
+    let mut accounts = valid_create_sale_accounts();
+    accounts.creator = creator;
+    accounts.creator_token_ata = creator_token_ata;
+    create_sale_with_accounts(accounts, 800, 200, 1_000, 100);
+}
+
+#[should_panic(expected = "Creator authorization is missing")]
+#[test]
+fn create_sale_rejects_a_creator_without_authorization() {
+    let creator_id = AccountId::new([3; 32]);
+    create_valid_sale_with(
+        AccountWithMetadata {
+            is_authorized: false,
+            ..signer(creator_id)
+        },
+        creator_source_ata(creator_id, AccountId::new([4; 32])),
+    );
+}
+
+#[test]
+fn trusted_ata_program_id_matches_the_pinned_lez_guest() {
+    assert_eq!(ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID, programs::ata().id());
+}
+
+#[should_panic(expected = "ATA account ID does not match expected derivation")]
+#[test]
+fn create_sale_rejects_a_source_ata_not_owned_by_the_creator() {
+    let creator_id = AccountId::new([3; 32]);
+    let intruder_id = AccountId::new([6; 32]);
+    create_valid_sale_with(
+        signer(creator_id),
+        creator_source_ata(intruder_id, AccountId::new([4; 32])),
+    );
+}
+
+#[should_panic(expected = "Sale account ID does not match PDA")]
+#[test]
+fn create_sale_rejects_a_forged_sale_account() {
+    let mut accounts = valid_create_sale_accounts();
+    accounts.sale.account_id = AccountId::new([6; 32]);
+    create_sale_with_accounts(accounts, 800, 200, 1_000, 100);
+}
+
+#[should_panic(expected = "ATA account ID does not match expected derivation")]
+#[test]
+fn create_sale_rejects_a_forged_sale_token_ata() {
+    let mut accounts = valid_create_sale_accounts();
+    accounts.sale_token_ata.account_id = AccountId::new([6; 32]);
+    create_sale_with_accounts(accounts, 800, 200, 1_000, 100);
+}
+
+#[should_panic(expected = "ATA account ID does not match expected derivation")]
+#[test]
+fn create_sale_rejects_a_forged_sale_collateral_ata() {
+    let mut accounts = valid_create_sale_accounts();
+    accounts.sale_collateral_ata.account_id = AccountId::new([6; 32]);
+    create_sale_with_accounts(accounts, 800, 200, 1_000, 100);
+}
+
+#[should_panic(expected = "Sale account is already initialized")]
+#[test]
+fn create_sale_rejects_reinitializing_an_existing_sale() {
+    let mut accounts = valid_create_sale_accounts();
+    accounts.sale.account.program_owner = CURVE_PROGRAM_ID;
+    create_sale_with_accounts(accounts, 800, 200, 1_000, 100);
+}
+
+#[should_panic(expected = "sale reserve plus DEX seed reserve overflows")]
+#[test]
+fn create_sale_rejects_a_deposit_that_cannot_fit_in_u128() {
+    create_sale_with_accounts(valid_create_sale_accounts(), 800, u128::MAX, 1_000, 100);
+}
+
+#[should_panic(expected = "invalid sale parameters")]
+#[test]
+fn create_sale_enforces_the_sale_parameter_validation() {
+    create_sale_with_accounts(valid_create_sale_accounts(), 0, 200, 1_000, 100);
+}
+
+#[test]
+fn creator_can_open_a_sale_and_atomically_fund_its_ata_reserves() {
+    let creator = signer(AccountId::new([3; 32]));
+    let token_definition_id = AccountId::new([4; 32]);
+    let collateral_definition_id = AccountId::new([5; 32]);
+    let sale_id = compute_sale_pda(
+        CURVE_PROGRAM_ID,
+        token_definition_id,
+        collateral_definition_id,
+    );
+    let sale = AccountWithMetadata {
+        account_id: sale_id,
+        ..uninitialized_config()
+    };
+    let sale_token_ata = ata(sale_id, token_definition_id, Account::default());
+    let sale_collateral_ata = ata(sale_id, collateral_definition_id, Account::default());
+
+    let (post_states, chained_calls) = create_sale(
+        sale,
+        creator.clone(),
+        token_definition(token_definition_id),
+        token_definition(collateral_definition_id),
+        creator_source_ata(creator.account_id, token_definition_id),
+        sale_token_ata.clone(),
+        sale_collateral_ata,
+        800,
+        200,
+        1_000,
+        100,
+        CURVE_PROGRAM_ID,
+    );
+
+    let sale_account = SaleAccount::try_from(&post_states[0].account().data)
+        .expect("sale post-state holds a valid sale");
+    assert_eq!(sale_account.sale.k, 100_000);
+    assert_eq!(sale_account.sale.sale_reserve, 800);
+    assert_eq!(sale_account.sale.dex_seed_reserve, 200);
+    assert_eq!(
+        sale_account.creator_commitment,
+        compute_creator_commitment(creator.account_id, sale_id)
+    );
+    assert_eq!(
+        post_states[0].required_claim(),
+        Some(Claim::Pda(crate::compute_sale_pda_seed(
+            token_definition_id,
+            collateral_definition_id,
+        )))
+    );
+
+    assert_eq!(chained_calls.len(), 3);
+    for call in &chained_calls[..2] {
+        assert_eq!(call.program_id, ATA_PROGRAM_ID);
+        let instruction: AtaInstruction =
+            risc0_zkvm::serde::from_slice(&call.instruction_data).expect("ATA instruction parses");
+        assert!(matches!(
+            instruction,
+            AtaInstruction::Create {
+                ata_program_id: ATA_PROGRAM_ID
+            }
+        ));
+    }
+    let transfer = &chained_calls[2];
+    assert_eq!(transfer.program_id, ATA_PROGRAM_ID);
+    let instruction: AtaInstruction =
+        risc0_zkvm::serde::from_slice(&transfer.instruction_data).expect("ATA instruction parses");
+    assert!(matches!(
+        instruction,
+        AtaInstruction::Transfer {
+            ata_program_id: ATA_PROGRAM_ID,
+            amount: 1_000,
+        }
+    ));
+    assert_eq!(transfer.pre_states[2].account_id, sale_token_ata.account_id);
+    assert_eq!(
+        TokenHolding::try_from(&transfer.pre_states[2].account.data)
+            .expect("funding recipient is initialized"),
+        TokenHolding::Fungible {
+            definition_id: token_definition_id,
+            balance: 0,
+        }
+    );
 }
 
 #[should_panic(expected = "Authority is not the config admin")]
@@ -256,6 +522,7 @@ fn sale_state_round_trips_through_account_data() {
     let sale_account = SaleAccount {
         token_definition_id: AccountId::new([1; 32]),
         collateral_definition_id: AccountId::new([2; 32]),
+        creator_commitment: [3; 32],
         sale: Sale::create(800, 200, 1000, 100).expect("valid sale"),
     };
     let data = Data::from(&sale_account);

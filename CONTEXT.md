@@ -43,4 +43,4 @@ Boundaries are enforced by cargo rather than by convention, so a reviewer can ch
 - `methods/guest/src/bin/*.rs` — one risc0 guest per file. Each is a dispatch shim over the matching core crate. Excluded from the root workspace so the guest keeps its own `[profile.release]`, which is part of program identity.
 - `verify/` — what a reviewer runs.
 
-Nothing yet owns the factory or the ATA derivation. They arrive with GTM-515 and the ATA work, as modules or crates depending on what the boundary turns out to need.
+`curve-core` owns the ATA derivation checks and chained custody calls for sale reserves. Nothing yet owns the factory; it arrives with GTM-515 as modules or crates depending on what that boundary turns out to need.

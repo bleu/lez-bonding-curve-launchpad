@@ -16,6 +16,12 @@ The pool and protocol fee rates and the treasury owner live in a singleton confi
 
 RFP-015 sources the admin authority from the RFP-001 library, which this proof of concept does not build. The seam it plugs into is the admin field itself: rotate the admin to the key that library controls and it holds the gate from then on, with no code change and no redeploy. Rotation is single-step, so a rotation to a wrong key is unrecoverable — check the key before you sign.
 
+## Creator privacy boundary
+
+The opinionated factory path must create a fresh regular private account for every sale and use it as the creator authority. `create_sale` requires that authority to own the project-token ATA funding the sale, but public sale state stores only `hash(creator_account_id || sale_pda)`. It never publishes the creator account ID. Creator-only close and withdrawal operations must privately supply the same authority and verify it against that commitment.
+
+LEZ guest programs receive an account ID and an authorization flag, but cannot determine whether the input account was public or private. The factory SDK therefore enforces the private-account choice. A caller bypassing the SDK can reveal their own creator identity by supplying a public account, but cannot compromise another creator's privacy.
+
 ## Build
 
 ```bash
