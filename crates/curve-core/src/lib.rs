@@ -38,7 +38,8 @@ pub enum Instruction {
     ///   admin after
     UpdateConfig {
         admin: AccountId,
-        fee_bps: u16,
+        pool_fee_bps: u16,
+        protocol_fee_bps: u16,
         treasury: AccountId,
     },
     /// Opens a sale over the token pair handed to it. Handler: GTM-509.
@@ -83,8 +84,8 @@ pub enum Instruction {
 /// Replace with the operator's key before deploying. See the README, "Admin authority".
 pub const GENESIS_ADMIN: AccountId = AccountId::new([0xAD; 32]);
 
-/// The fee denominator. A `fee_bps` above this would make `amount - fee` underflow,
-/// so `update_config` rejects it. Any tighter cap is the operator's call, not ours.
+/// The fee denominator. A combined fee above this would make `amount - fee`
+/// underflow, so `update_config` rejects it.
 pub const MAX_FEE_BPS: u16 = 10_000;
 
 /// The ATA program shipped by the pinned LEZ revision. Program IDs are risc0
@@ -105,7 +106,8 @@ pub const ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID: ProgramId = [
 #[derive(Clone, Default, BorshSerialize, BorshDeserialize)]
 pub struct Config {
     pub admin: AccountId,
-    pub fee_bps: u16,
+    pub pool_fee_bps: u16,
+    pub protocol_fee_bps: u16,
     pub treasury: AccountId,
 }
 

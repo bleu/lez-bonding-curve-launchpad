@@ -47,7 +47,8 @@ fn initialized_config(admin: AccountId) -> AccountWithMetadata {
         program_owner: CURVE_PROGRAM_ID,
         data: Data::from(&Config {
             admin,
-            fee_bps: 250,
+            pool_fee_bps: 150,
+            protocol_fee_bps: 100,
             treasury: new_treasury(),
         }),
         ..Account::default()
@@ -337,7 +338,8 @@ fn init_rejects_an_authority_other_than_the_genesis_admin() {
         uninitialized_config(),
         intruder_signer(),
         new_admin(),
-        250,
+        150,
+        100,
         new_treasury(),
         CURVE_PROGRAM_ID,
     );
@@ -354,7 +356,8 @@ fn update_config_rejects_an_unauthorized_authority() {
         uninitialized_config(),
         unsigned_genesis_admin,
         new_admin(),
-        250,
+        150,
+        100,
         new_treasury(),
         CURVE_PROGRAM_ID,
     );
@@ -369,7 +372,8 @@ fn stored_admin_rotates_the_admin_to_a_new_key() {
         initialized_config(new_admin()),
         signer(new_admin()),
         rotated_to,
-        100,
+        60,
+        40,
         new_treasury(),
         CURVE_PROGRAM_ID,
     );
@@ -378,7 +382,8 @@ fn stored_admin_rotates_the_admin_to_a_new_key() {
     let config =
         Config::try_from(&config_post.account().data).expect("post state holds a valid Config");
     assert_eq!(config.admin, rotated_to);
-    assert_eq!(config.fee_bps, 100);
+    assert_eq!(config.pool_fee_bps, 60);
+    assert_eq!(config.protocol_fee_bps, 40);
     assert_eq!(
         config_post.required_claim(),
         None,
@@ -395,20 +400,22 @@ fn update_rejects_the_rotated_out_admin() {
         initialized_config(new_admin()),
         genesis_admin_signer(),
         new_admin(),
-        250,
+        150,
+        100,
         new_treasury(),
         CURVE_PROGRAM_ID,
     );
 }
 
-#[should_panic(expected = "Fee rate exceeds 10,000 basis points")]
+#[should_panic(expected = "Combined fee rate exceeds 10,000 basis points")]
 #[test]
-fn update_config_rejects_a_fee_above_the_denominator() {
+fn update_config_rejects_combined_fees_above_the_denominator() {
     let _post_states = update_config(
         uninitialized_config(),
         genesis_admin_signer(),
         new_admin(),
-        10_001,
+        10_000,
+        1,
         new_treasury(),
         CURVE_PROGRAM_ID,
     );
@@ -418,19 +425,21 @@ fn update_config_rejects_a_fee_above_the_denominator() {
 // 10,000 is the denominator itself.
 #[test]
 fn fee_boundaries_are_legal() {
-    for fee_bps in [0, 10_000] {
+    for (pool_fee_bps, protocol_fee_bps) in [(0, 0), (10_000, 0), (0, 10_000)] {
         let post_states = update_config(
             uninitialized_config(),
             genesis_admin_signer(),
             new_admin(),
-            fee_bps,
+            pool_fee_bps,
+            protocol_fee_bps,
             new_treasury(),
             CURVE_PROGRAM_ID,
         );
         let [config_post]: [_; 1] = post_states.try_into().expect("exactly one post state");
         let config =
             Config::try_from(&config_post.account().data).expect("post state holds a valid Config");
-        assert_eq!(config.fee_bps, fee_bps);
+        assert_eq!(config.pool_fee_bps, pool_fee_bps);
+        assert_eq!(config.protocol_fee_bps, protocol_fee_bps);
     }
 }
 
@@ -443,7 +452,8 @@ fn update_config_rejects_a_default_admin() {
         uninitialized_config(),
         genesis_admin_signer(),
         AccountId::default(),
-        250,
+        150,
+        100,
         new_treasury(),
         CURVE_PROGRAM_ID,
     );
@@ -456,7 +466,8 @@ fn update_config_rejects_a_default_treasury() {
         uninitialized_config(),
         genesis_admin_signer(),
         new_admin(),
-        250,
+        150,
+        100,
         AccountId::default(),
         CURVE_PROGRAM_ID,
     );
@@ -473,7 +484,8 @@ fn update_config_rejects_a_forged_config_account() {
         forged_config,
         genesis_admin_signer(),
         new_admin(),
-        250,
+        150,
+        100,
         new_treasury(),
         CURVE_PROGRAM_ID,
     );
@@ -485,7 +497,8 @@ fn first_update_config_initializes_the_config() {
         uninitialized_config(),
         genesis_admin_signer(),
         new_admin(),
-        250,
+        150,
+        100,
         new_treasury(),
         CURVE_PROGRAM_ID,
     );
@@ -494,7 +507,8 @@ fn first_update_config_initializes_the_config() {
     let config =
         Config::try_from(&config_post.account().data).expect("post state holds a valid Config");
     assert_eq!(config.admin, new_admin());
-    assert_eq!(config.fee_bps, 250);
+    assert_eq!(config.pool_fee_bps, 150);
+    assert_eq!(config.protocol_fee_bps, 100);
     assert_eq!(config.treasury, new_treasury());
     assert_eq!(
         config_post.required_claim(),
@@ -524,7 +538,8 @@ fn every_instruction_survives_the_guest_wire_format() {
     let instructions = [
         Instruction::UpdateConfig {
             admin: new_admin(),
-            fee_bps: 250,
+            pool_fee_bps: 150,
+            protocol_fee_bps: 100,
             treasury: new_treasury(),
         },
         Instruction::CreateSale {

@@ -1,6 +1,9 @@
 # 0003 — Admin config: one instruction, a genesis constant, and rotation as the RFP-001 seam
 
-Status: accepted
+Status: amended by ADR 0005
+
+ADR 0005 supersedes this ADR's single `fee_bps`, collateral-only fee, and
+round-down decisions. The admin lifecycle and live-config decisions remain accepted.
 
 ## Context
 

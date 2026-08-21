@@ -1,6 +1,10 @@
 # 0004 — Bound the virtual reserves below 2^64 so the curve arithmetic stays in u128
 
-Status: accepted
+Status: amended by ADR 0005
+
+ADR 0005 supersedes the claims that creation computes the only reserve product and
+that later trades may consume rounding surplus. The creation bound and checked
+sell-side arithmetic remain accepted.
 
 ## Context
 

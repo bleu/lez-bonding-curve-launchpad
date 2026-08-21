@@ -16,14 +16,23 @@ pub fn process_instruction(
     match instruction {
         Instruction::UpdateConfig {
             admin,
-            fee_bps,
+            pool_fee_bps,
+            protocol_fee_bps,
             treasury,
         } => {
             let [config, authority] = pre_states
                 .try_into()
                 .expect("UpdateConfig requires exactly two accounts");
             (
-                update_config(config, authority, admin, fee_bps, treasury, self_program_id),
+                update_config(
+                    config,
+                    authority,
+                    admin,
+                    pool_fee_bps,
+                    protocol_fee_bps,
+                    treasury,
+                    self_program_id,
+                ),
                 vec![],
             )
         }
