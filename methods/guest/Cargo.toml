@@ -16,6 +16,7 @@ risc0-zkvm = { version = "3.0.5", default-features = false, features = ["std"] }
 # referenced or not, which turns a host-feature leak into a build failure here instead
 # of a surprise in GTM-509. The `curve.rs` shim that uses it lands in GTM-509.
 curve-core = { path = "../../crates/curve-core" }
+factory-core = { path = "../../crates/factory-core" }
 
 # Part of program identity: the risc0 image ID is computed over the
 # release-stripped binary, so every build that must reproduce a program id has

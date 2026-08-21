@@ -5,7 +5,9 @@ use lee_core::{
     program::{AccountPostState, ChainedCall, ProgramId},
 };
 
-use crate::{Instruction, pool_create::create_pool, update_config::update_config};
+use crate::{
+    Instruction, pool_create::create_pool, pool_lifecycle::close_pool, update_config::update_config,
+};
 
 #[must_use]
 pub fn process_instruction(
@@ -79,9 +81,14 @@ pub fn process_instruction(
                 curve_program_id,
             )
         }
+        Instruction::ClosePool => {
+            let [pool, owner] = pre_states
+                .try_into()
+                .expect("ClosePool requires exactly two accounts");
+            (close_pool(pool, owner, self_program_id), vec![])
+        }
         Instruction::SwapExactInput { .. }
         | Instruction::SwapExactOutput { .. }
-        | Instruction::ClosePool
         | Instruction::WithdrawReserves => panic!("instruction handler is not implemented yet"),
     }
 }
