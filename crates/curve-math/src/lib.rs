@@ -5,10 +5,9 @@
 //! direction at every call site is visible at the call rather than inferred from
 //! context.
 //!
-//! These are honest quotes over the current reserves. Rounding drift accumulates
-//! as `Vt * Vc` moves above `k`, and a quote treats that surplus as spendable:
-//! after ordinary trades, a zero-amount trade can quote a positive payout. Callers
-//! must reject zero-amount trades; the state machine in `crates/sale` owns that.
+//! These are honest quotes over the invariant product supplied by the caller. The
+//! state machine in `crates/sale` supplies the current reserve product so rounding
+//! surplus is not spendable, and rejects zero-amount trades before quoting.
 //!
 //! The u128 bound argument lives in `docs/adr/0004`.
 
