@@ -33,7 +33,6 @@ pub fn process_instruction(
             virtual_token_reserve,
             virtual_collateral_reserve,
             curve_program_id,
-            ata_program_id,
         } => {
             assert_eq!(
                 curve_program_id, self_program_id,
@@ -63,7 +62,6 @@ pub fn process_instruction(
                 virtual_token_reserve,
                 virtual_collateral_reserve,
                 curve_program_id,
-                ata_program_id,
             )
         }
         Instruction::Buy { .. }

@@ -13,13 +13,13 @@ use sale::Sale;
 use token_core::{TokenDefinition, TokenHolding};
 
 use crate::{
-    Config, GENESIS_ADMIN, Instruction, SaleAccount, compute_config_pda, compute_config_pda_seed,
-    compute_creator_commitment, compute_sale_pda, create_sale::create_sale,
-    update_config::update_config,
+    ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID, Config, GENESIS_ADMIN, Instruction, SaleAccount,
+    compute_config_pda, compute_config_pda_seed, compute_creator_commitment, compute_sale_pda,
+    create_sale::create_sale, update_config::update_config,
 };
 
 const CURVE_PROGRAM_ID: ProgramId = [7; 8];
-const ATA_PROGRAM_ID: ProgramId = [8; 8];
+const ATA_PROGRAM_ID: ProgramId = ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID;
 const TOKEN_PROGRAM_ID: ProgramId = [9; 8];
 
 fn uninitialized_config() -> AccountWithMetadata {
@@ -164,7 +164,6 @@ fn create_sale_with_accounts(
         virtual_token_reserve,
         virtual_collateral_reserve,
         CURVE_PROGRAM_ID,
-        ATA_PROGRAM_ID,
     );
 }
 
@@ -186,6 +185,11 @@ fn create_sale_rejects_a_creator_without_authorization() {
         },
         creator_source_ata(creator_id, AccountId::new([4; 32])),
     );
+}
+
+#[test]
+fn trusted_ata_program_id_matches_the_pinned_lez_guest() {
+    assert_eq!(ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID, programs::ata().id());
 }
 
 #[should_panic(expected = "ATA account ID does not match expected derivation")]
@@ -273,7 +277,6 @@ fn creator_can_open_a_sale_and_atomically_fund_its_ata_reserves() {
         1_000,
         100,
         CURVE_PROGRAM_ID,
-        ATA_PROGRAM_ID,
     );
 
     let sale_account = SaleAccount::try_from(&post_states[0].account().data)
@@ -530,7 +533,6 @@ fn every_instruction_survives_the_guest_wire_format() {
             virtual_token_reserve: 1000,
             virtual_collateral_reserve: 100,
             curve_program_id: [7; 8],
-            ata_program_id: [8; 8],
         },
         Instruction::Buy {
             collateral_in: 25,

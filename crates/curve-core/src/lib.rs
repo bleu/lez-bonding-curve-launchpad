@@ -59,8 +59,6 @@ pub enum Instruction {
         /// Included in the wire instruction following the LEZ program convention;
         /// dispatch verifies it against the executing program id.
         curve_program_id: ProgramId,
-        /// The ATA program is independently deployed, so its id is supplied by the client.
-        ata_program_id: ProgramId,
     },
     /// Buys from the curve, auto-closing on the buy that exhausts the sale
     /// reserve. Handler: GTM-510.
@@ -88,6 +86,19 @@ pub const GENESIS_ADMIN: AccountId = AccountId::new([0xAD; 32]);
 /// The fee denominator. A `fee_bps` above this would make `amount - fee` underflow,
 /// so `update_config` rejects it. Any tighter cap is the operator's call, not ours.
 pub const MAX_FEE_BPS: u16 = 10_000;
+
+/// The ATA program shipped by the pinned LEZ revision. Program IDs are risc0
+/// image IDs, so this binds custody calls to that exact guest implementation.
+pub const ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID: ProgramId = [
+    0xc81c_8495,
+    0xd787_2cbd,
+    0xc7c5_1b11,
+    0x852a_aaf3,
+    0xf790_5ed3,
+    0xa382_7e21,
+    0xac05_aa97,
+    0xf800_15d5,
+];
 
 /// The protocol settings: one singleton PDA per deployment, read live by every trade.
 /// Created and replaced whole by `update_config`. See `docs/adr/0003`.

@@ -20,6 +20,7 @@ token_core.workspace = true
 # workspace excludes and `cargo test --workspace` therefore never reaches.
 [dev-dependencies]
 lee = { workspace = true, features = ["test-utils"] }
+programs.workspace = true
 
 [lints]
 workspace = true

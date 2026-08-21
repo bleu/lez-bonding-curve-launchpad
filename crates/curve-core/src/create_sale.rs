@@ -7,7 +7,10 @@ use lee_core::{
 };
 use token_core::{TokenDefinition, TokenHolding};
 
-use crate::{SaleAccount, compute_creator_commitment, compute_sale_pda, compute_sale_pda_seed};
+use crate::{
+    ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID, SaleAccount, compute_creator_commitment, compute_sale_pda,
+    compute_sale_pda_seed,
+};
 
 #[expect(
     clippy::too_many_arguments,
@@ -27,8 +30,8 @@ pub fn create_sale(
     virtual_token_reserve: u128,
     virtual_collateral_reserve: u128,
     curve_program_id: ProgramId,
-    ata_program_id: ProgramId,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+    let ata_program_id = ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID;
     assert!(creator.is_authorized, "Creator authorization is missing");
     assert_eq!(
         sale_account.account_id,
