@@ -38,7 +38,7 @@ Boundaries are enforced by cargo rather than by convention, so a reviewer can ch
 - `crates/curve-math` — the pricing arithmetic as pure functions over integers. Empty dependency list. Denies `clippy::arithmetic_side_effects`, so every operation is a named checked call.
 - `crates/sale` — the sale state machine. Applies a buy, a sell, or a close and returns what should move. Depends on `curve-math` and `borsh` only, so the solvency property test needs no account fixtures. Denies `arithmetic_side_effects` too.
 - `crates/curve-core` — where `lee_core` enters. Instruction enum, Borsh state, PDA derivation, and the handlers. The handlers are shallow: deserialize, call `sale`, translate the outcome into post-states and chained calls. AMM-style tests live here.
-- `crates/launchpad-client` — the SDK. Wallet handling, message and witness construction, program ids, account derivation. The private deshield to buy to re-shield flow belongs here, because the program cannot enforce the re-shield.
+- `crates/launchpad-client` — the SDK. Wallet handling, message and witness construction, program ids, account derivation. The private deshield to buy to re-shield flow belongs here, because the program cannot enforce the re-shield. It also owns the complete guest-binary dependency set needed to prove a private transaction with chained calls, plus the post-submit private-account sync.
 - `cli/` — the `launchpad` binary. Parses arguments and calls `launchpad-client`, and nothing else.
 - `methods/guest/src/bin/*.rs` — one risc0 guest per file. Each is a dispatch shim over the matching core crate. Excluded from the root workspace so the guest keeps its own `[profile.release]`, which is part of program identity.
 - `verify/` — what a reviewer runs.

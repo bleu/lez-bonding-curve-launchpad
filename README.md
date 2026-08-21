@@ -4,6 +4,20 @@ Proof of concept for [Logos RFP-015](https://github.com/logos-co/rfp/blob/master
 
 Read `CONTEXT.md` for the vocabulary and the crate map, and `docs/adr/` for why things are the way they are. The reviewer-facing writeup, the requirement mapping and the honest list of what is not covered arrive with GTM-519.
 
+## Privacy boundary
+
+The first privacy goal is **anonymous participation**, not confidential market
+activity. A participant may fund a trade from a private account, but the sale,
+its reserves, price movement, fees, and token-account changes are public. Those
+public changes can reveal or constrain a trade's effective size. The program
+does not and must not claim otherwise.
+
+The SDK owns the private trade lifecycle: it assembles the guest binaries needed
+to prove the main call and every chained call, submits the private transaction,
+syncs the private account, and re-shields received assets where applicable. The
+program cannot enforce that last step. The implementation and acceptance checks
+for that lifecycle are recorded in [ADR 0005](docs/adr/0005-private-trade-boundary-and-verification.md).
+
 ## Layout
 
 Two programs. The curve runs a sale over any token pair handed to it, and is the RFP deliverable. The factory mints a token with a fixed supply, publishes the split, and tail-calls into the curve to open the sale.
