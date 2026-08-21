@@ -36,8 +36,7 @@ pub struct FactoryState {
     pub total_supply: u128,
     pub virtual_token_reserve: u128,
     pub virtual_collateral_reserve: u128,
-    pub decimals: u8,
-    pub symbol: String,
+    pub curve_program_id: ProgramId,
     pub unlock_policy: UnlockPolicy,
     pub creator_commitment: [u8; 32],
     pub creator_escrow_id: AccountId,
@@ -60,30 +59,22 @@ impl From<&FactoryState> for Data {
     }
 }
 
-#[expect(
-    clippy::large_enum_variant,
-    reason = "the guest wire format keeps the launch fields flat and auditable"
-)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Instruction {
     CreateFactoryPool {
         launch_salt: [u8; 32],
         name: String,
-        symbol: String,
         uri: String,
-        decimals: u8,
         sale_reserve: u128,
         dex_seed_reserve: u128,
         creator_allocation: u128,
         virtual_token_reserve: u128,
         virtual_collateral_reserve: u128,
         unlock_policy: UnlockPolicy,
-        creator_commitment: [u8; 32],
         curve_program_id: ProgramId,
     },
-    UnlockCreatorAllocation {
-        creator_commitment: [u8; 32],
-    },
+    CloseFactoryPool,
+    UnlockCreatorAllocation,
 }
 
 /// The only factory-facing validation error. Account and token adapter violations use
@@ -93,7 +84,6 @@ pub enum CreateError {
     SaleReserveZero,
     SupplyOverflow,
     EmptyName,
-    EmptySymbol,
     EmptyUri,
 }
 
@@ -103,7 +93,6 @@ impl std::fmt::Display for CreateError {
             Self::SaleReserveZero => "a factory launch needs a non-zero sale reserve",
             Self::SupplyOverflow => "launch allocations exceed u128 total supply",
             Self::EmptyName => "token name must not be empty",
-            Self::EmptySymbol => "token symbol must not be empty",
             Self::EmptyUri => "token metadata URI must not be empty",
         };
         f.write_str(text)
@@ -168,6 +157,19 @@ pub fn compute_escrow_pda(factory_program_id: ProgramId, launch_salt: [u8; 32]) 
     AccountId::for_public_pda(&factory_program_id, &compute_escrow_seed(launch_salt))
 }
 
+/// Commits a private creator account to one launch without recording its account ID in factory
+/// state. The creator account itself must be authorized whenever this commitment is used.
+pub fn compute_creator_commitment(creator_id: AccountId, launch_salt: [u8; 32]) -> [u8; 32] {
+    use risc0_zkvm::sha::{Impl, Sha256 as _};
+    let mut bytes = [0_u8; 64];
+    bytes[..32].copy_from_slice(&creator_id.to_bytes());
+    bytes[32..].copy_from_slice(&launch_salt);
+    Impl::hash_bytes(&bytes)
+        .as_bytes()
+        .try_into()
+        .expect("sha256 is 32 bytes")
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "the public launch interface owns its explicit accounts"
@@ -179,6 +181,7 @@ pub fn create_factory_pool(
     mint_holding: AccountWithMetadata,
     metadata: AccountWithMetadata,
     creator_escrow: AccountWithMetadata,
+    creator: AccountWithMetadata,
     creator_holding: AccountWithMetadata,
     collateral_definition: AccountWithMetadata,
     factory_token_ata: AccountWithMetadata,
@@ -188,21 +191,17 @@ pub fn create_factory_pool(
     pool_collateral_ata: AccountWithMetadata,
     launch_salt: [u8; 32],
     name: String,
-    symbol: String,
     uri: String,
-    decimals: u8,
     sale_reserve: u128,
     dex_seed_reserve: u128,
     creator_allocation: u128,
     virtual_token_reserve: u128,
     virtual_collateral_reserve: u128,
     unlock_policy: UnlockPolicy,
-    creator_commitment: [u8; 32],
     factory_program_id: ProgramId,
     curve_program_id: ProgramId,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     assert!(!name.is_empty(), "token name must not be empty");
-    assert!(!symbol.is_empty(), "token symbol must not be empty");
     assert!(!uri.is_empty(), "token metadata URI must not be empty");
     let supply = total_supply(sale_reserve, dex_seed_reserve, creator_allocation)
         .expect("launch allocations are valid");
@@ -235,6 +234,13 @@ pub fn create_factory_pool(
         creator_escrow.account_id,
         compute_escrow_pda(factory_program_id, launch_salt),
         "Creator escrow ID does not match PDA"
+    );
+    assert!(creator.is_authorized, "Creator authorization is missing");
+    associated_token_account_core::verify_ata_and_get_seed(
+        &creator_holding,
+        &creator,
+        token_definition.account_id,
+        ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID,
     );
     assert_eq!(
         pool.account_id,
@@ -376,10 +382,9 @@ pub fn create_factory_pool(
         total_supply: supply,
         virtual_token_reserve,
         virtual_collateral_reserve,
-        decimals,
-        symbol,
+        curve_program_id,
         unlock_policy,
-        creator_commitment,
+        creator_commitment: compute_creator_commitment(creator.account_id, launch_salt),
         creator_escrow_id: creator_escrow.account_id,
         pool_id: pool.account_id,
         creator_unlocked: unlock_policy == UnlockPolicy::Immediate,
@@ -396,6 +401,7 @@ pub fn create_factory_pool(
             AccountPostState::new(mint_holding.account),
             AccountPostState::new(metadata.account),
             AccountPostState::new(creator_escrow.account),
+            AccountPostState::new(creator.account),
             AccountPostState::new(creator_holding.account),
             AccountPostState::new(collateral_definition.account),
             AccountPostState::new(factory_token_ata.account),
@@ -415,8 +421,8 @@ pub fn unlock_creator_allocation(
     factory: AccountWithMetadata,
     pool: AccountWithMetadata,
     escrow: AccountWithMetadata,
+    creator: AccountWithMetadata,
     creator_holding: AccountWithMetadata,
-    creator_commitment: [u8; 32],
     factory_program_id: ProgramId,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     let mut state =
@@ -426,8 +432,10 @@ pub fn unlock_creator_allocation(
         compute_factory_pda(factory_program_id, state.launch_salt),
         "Factory account ID does not match PDA"
     );
+    assert!(creator.is_authorized, "Creator authorization is missing");
     assert_eq!(
-        creator_commitment, state.creator_commitment,
+        compute_creator_commitment(creator.account_id, state.launch_salt),
+        state.creator_commitment,
         "Creator commitment does not match launch"
     );
     assert_eq!(
@@ -437,6 +445,12 @@ pub fn unlock_creator_allocation(
     assert_eq!(
         escrow.account_id, state.creator_escrow_id,
         "Creator escrow does not belong to factory launch"
+    );
+    associated_token_account_core::verify_ata_and_get_seed(
+        &creator_holding,
+        &creator,
+        state.token_definition_id,
+        ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID,
     );
     assert_eq!(
         state.unlock_policy,
@@ -453,37 +467,90 @@ pub fn unlock_creator_allocation(
         !pool_state.pool.open,
         "Pool must be closed before creator unlock"
     );
-    let holding = TokenHolding::try_from(&escrow.account.data)
-        .expect("Creator escrow must hold launch tokens");
-    let amount = match holding {
-        TokenHolding::Fungible { balance, .. } => balance,
-        _ => panic!("Creator escrow must hold fungible launch tokens"),
-    };
     state.creator_unlocked = true;
     let mut post = factory.account;
     post.data = Data::from(&state);
-    (
-        vec![
-            AccountPostState::new(post),
-            AccountPostState::new(pool.account),
-            AccountPostState::new(escrow.account.clone()),
-            AccountPostState::new(creator_holding.account.clone()),
-        ],
+    let calls = if state.creator_allocation == 0 {
+        vec![]
+    } else {
+        let holding = TokenHolding::try_from(&escrow.account.data)
+            .expect("Creator escrow must hold launch tokens");
+        let amount = match holding {
+            TokenHolding::Fungible { balance, .. } => balance,
+            _ => panic!("Creator escrow must hold fungible launch tokens"),
+        };
         vec![
             ChainedCall::new(
                 escrow.account.program_owner,
                 vec![
                     AccountWithMetadata {
                         is_authorized: true,
-                        ..escrow
+                        ..escrow.clone()
                     },
-                    creator_holding,
+                    creator_holding.clone(),
                 ],
                 &token_core::Instruction::Transfer {
                     amount_to_transfer: amount,
                 },
             )
             .with_pda_seeds(vec![compute_escrow_seed(state.launch_salt)]),
+        ]
+    };
+    (
+        vec![
+            AccountPostState::new(post),
+            AccountPostState::new(pool.account),
+            AccountPostState::new(escrow.account.clone()),
+            AccountPostState::new(creator.account),
+            AccountPostState::new(creator_holding.account.clone()),
+        ],
+        calls,
+    )
+}
+
+/// Relays a creator-authorized manual close to the neutral curve while authorizing the
+/// factory-owned pool owner PDA with the factory's seed.
+#[must_use]
+pub fn close_factory_pool(
+    factory: AccountWithMetadata,
+    pool: AccountWithMetadata,
+    creator: AccountWithMetadata,
+    factory_program_id: ProgramId,
+) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+    let state =
+        FactoryState::try_from(&factory.account.data).expect("Factory account holds invalid data");
+    assert_eq!(
+        factory.account_id,
+        compute_factory_pda(factory_program_id, state.launch_salt),
+        "Factory account ID does not match PDA"
+    );
+    assert!(creator.is_authorized, "Creator authorization is missing");
+    assert_eq!(
+        compute_creator_commitment(creator.account_id, state.launch_salt),
+        state.creator_commitment,
+        "Creator commitment does not match launch"
+    );
+    assert_eq!(
+        pool.account_id, state.pool_id,
+        "Pool does not belong to factory launch"
+    );
+    let factory_authorized = AccountWithMetadata {
+        is_authorized: true,
+        ..factory.clone()
+    };
+    (
+        vec![
+            AccountPostState::new(factory.account),
+            AccountPostState::new(pool.account.clone()),
+            AccountPostState::new(creator.account),
+        ],
+        vec![
+            ChainedCall::new(
+                state.curve_program_id,
+                vec![pool, factory_authorized],
+                &CurveInstruction::ClosePool,
+            )
+            .with_pda_seeds(vec![compute_factory_seed(state.launch_salt)]),
         ],
     )
 }
@@ -498,16 +565,13 @@ pub fn process_instruction(
         Instruction::CreateFactoryPool {
             launch_salt,
             name,
-            symbol,
             uri,
-            decimals,
             sale_reserve,
             dex_seed_reserve,
             creator_allocation,
             virtual_token_reserve,
             virtual_collateral_reserve,
             unlock_policy,
-            creator_commitment,
             curve_program_id,
         } => {
             let [
@@ -516,6 +580,7 @@ pub fn process_instruction(
                 mint,
                 metadata,
                 escrow,
+                creator,
                 creator_holding,
                 collateral_definition,
                 factory_token_ata,
@@ -525,13 +590,14 @@ pub fn process_instruction(
                 pool_collateral_ata,
             ] = pre_states
                 .try_into()
-                .expect("CreateFactoryPool requires exactly twelve accounts");
+                .expect("CreateFactoryPool requires exactly thirteen accounts");
             create_factory_pool(
                 factory,
                 definition,
                 mint,
                 metadata,
                 escrow,
+                creator,
                 creator_holding,
                 collateral_definition,
                 factory_token_ata,
@@ -541,32 +607,35 @@ pub fn process_instruction(
                 pool_collateral_ata,
                 launch_salt,
                 name,
-                symbol,
                 uri,
-                decimals,
                 sale_reserve,
                 dex_seed_reserve,
                 creator_allocation,
                 virtual_token_reserve,
                 virtual_collateral_reserve,
                 unlock_policy,
-                creator_commitment,
                 factory_program_id,
                 curve_program_id,
             )
         }
-        Instruction::UnlockCreatorAllocation { creator_commitment } => {
-            let [factory, pool, escrow, creator_holding] = pre_states
+        Instruction::UnlockCreatorAllocation => {
+            let [factory, pool, escrow, creator, creator_holding] = pre_states
                 .try_into()
-                .expect("UnlockCreatorAllocation requires exactly four accounts");
+                .expect("UnlockCreatorAllocation requires exactly five accounts");
             unlock_creator_allocation(
                 factory,
                 pool,
                 escrow,
+                creator,
                 creator_holding,
-                creator_commitment,
                 factory_program_id,
             )
+        }
+        Instruction::CloseFactoryPool => {
+            let [factory, pool, creator] = pre_states
+                .try_into()
+                .expect("CloseFactoryPool requires exactly three accounts");
+            close_factory_pool(factory, pool, creator, factory_program_id)
         }
     }
 }
@@ -574,6 +643,58 @@ pub fn process_instruction(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pool::Pool;
+
+    const FACTORY_PROGRAM_ID: ProgramId = [7; 8];
+    const CURVE_PROGRAM_ID: ProgramId = [6; 8];
+    const TOKEN_PROGRAM_ID: ProgramId = [5; 8];
+
+    fn ata_id(owner: AccountId, definition: AccountId) -> AccountId {
+        associated_token_account_core::get_associated_token_account_id(
+            &ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID,
+            &associated_token_account_core::compute_ata_seed(owner, definition),
+        )
+    }
+
+    fn creator(id: u8, is_authorized: bool) -> AccountWithMetadata {
+        AccountWithMetadata {
+            account: Account::default(),
+            account_id: AccountId::new([id; 32]),
+            is_authorized,
+        }
+    }
+
+    fn delayed_factory(creator: &AccountWithMetadata) -> (AccountWithMetadata, FactoryState) {
+        let launch_salt = [1; 32];
+        let state = FactoryState {
+            launch_salt,
+            token_definition_id: AccountId::new([2; 32]),
+            collateral_definition_id: AccountId::new([3; 32]),
+            sale_reserve: 800,
+            dex_seed_reserve: 100,
+            creator_allocation: 100,
+            total_supply: 1000,
+            virtual_token_reserve: 2000,
+            virtual_collateral_reserve: 100,
+            curve_program_id: CURVE_PROGRAM_ID,
+            unlock_policy: UnlockPolicy::OnClose,
+            creator_commitment: compute_creator_commitment(creator.account_id, launch_salt),
+            creator_escrow_id: AccountId::new([4; 32]),
+            pool_id: AccountId::new([5; 32]),
+            creator_unlocked: false,
+        };
+        (
+            AccountWithMetadata {
+                account: Account {
+                    data: Data::from(&state),
+                    ..Account::default()
+                },
+                account_id: compute_factory_pda(FACTORY_PROGRAM_ID, launch_salt),
+                is_authorized: false,
+            },
+            state,
+        )
+    }
     #[test]
     fn fixed_supply_is_the_exact_three_way_split() {
         assert_eq!(total_supply(800, 150, 50), Ok(1_000));
@@ -601,6 +722,340 @@ mod tests {
             compute_factory_pda(id, [1; 32])
         );
     }
+
+    #[test]
+    fn creator_commitment_is_scoped_to_creator_and_launch() {
+        let creator_account = creator(9, true);
+        assert_ne!(
+            compute_creator_commitment(creator_account.account_id, [1; 32]),
+            compute_creator_commitment(creator_account.account_id, [2; 32])
+        );
+        assert_ne!(
+            compute_creator_commitment(creator_account.account_id, [1; 32]),
+            compute_creator_commitment(creator(8, true).account_id, [1; 32])
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Creator authorization is missing")]
+    fn unlock_requires_the_creator_private_witness() {
+        let expected_creator = creator(9, true);
+        let (factory, state) = delayed_factory(&expected_creator);
+        let _ = unlock_creator_allocation(
+            factory,
+            AccountWithMetadata {
+                account_id: state.pool_id,
+                ..creator(1, false)
+            },
+            AccountWithMetadata {
+                account_id: state.creator_escrow_id,
+                ..creator(2, false)
+            },
+            creator(9, false),
+            creator(3, false),
+            FACTORY_PROGRAM_ID,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Creator commitment does not match launch")]
+    fn copied_commitment_cannot_unlock_to_another_creator() {
+        let expected_creator = creator(9, true);
+        let (factory, state) = delayed_factory(&expected_creator);
+        let _ = unlock_creator_allocation(
+            factory,
+            AccountWithMetadata {
+                account_id: state.pool_id,
+                ..creator(1, false)
+            },
+            AccountWithMetadata {
+                account_id: state.creator_escrow_id,
+                ..creator(2, false)
+            },
+            creator(8, true),
+            creator(3, false),
+            FACTORY_PROGRAM_ID,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "ATA account ID does not match expected derivation")]
+    fn unlock_rejects_a_recipient_not_owned_by_the_creator() {
+        let expected_creator = creator(9, true);
+        let (factory, state) = delayed_factory(&expected_creator);
+        let _ = unlock_creator_allocation(
+            factory,
+            AccountWithMetadata {
+                account_id: state.pool_id,
+                ..creator(1, false)
+            },
+            AccountWithMetadata {
+                account_id: state.creator_escrow_id,
+                ..creator(2, false)
+            },
+            expected_creator,
+            creator(3, false),
+            FACTORY_PROGRAM_ID,
+        );
+    }
+
+    #[test]
+    fn zero_delayed_allocation_unlocks_without_an_escrow_holding() {
+        let expected_creator = creator(9, true);
+        let (mut factory, mut state) = delayed_factory(&expected_creator);
+        state.creator_allocation = 0;
+        state.total_supply = state.sale_reserve + state.dex_seed_reserve;
+        factory.account.data = Data::from(&state);
+
+        let mut closed_pool = Pool::create(800, 0, 1_000, 100, None).expect("valid pool");
+        closed_pool.close_pool();
+        let pool = AccountWithMetadata {
+            account: Account {
+                data: Data::from(&PoolAccount {
+                    token0_definition_id: state.token_definition_id,
+                    token1_definition_id: state.collateral_definition_id,
+                    owner: factory.account_id,
+                    pool: closed_pool,
+                }),
+                ..Account::default()
+            },
+            account_id: state.pool_id,
+            is_authorized: false,
+        };
+        let creator_holding = AccountWithMetadata {
+            account: Account::default(),
+            account_id: ata_id(expected_creator.account_id, state.token_definition_id),
+            is_authorized: false,
+        };
+        let escrow = AccountWithMetadata {
+            account: Account::default(),
+            account_id: state.creator_escrow_id,
+            is_authorized: false,
+        };
+
+        let (post_states, calls) = unlock_creator_allocation(
+            factory,
+            pool,
+            escrow,
+            expected_creator,
+            creator_holding,
+            FACTORY_PROGRAM_ID,
+        );
+
+        assert!(calls.is_empty());
+        let unlocked =
+            FactoryState::try_from(&post_states[0].account().data).expect("factory state parses");
+        assert!(unlocked.creator_unlocked);
+    }
+
+    #[test]
+    fn create_mints_the_exact_split_and_funds_only_the_tradeable_pool_reserve() {
+        let launch_salt = [3; 32];
+        let factory_id = compute_factory_pda(FACTORY_PROGRAM_ID, launch_salt);
+        let token_definition_id = compute_definition_pda(FACTORY_PROGRAM_ID, launch_salt);
+        let collateral_definition_id = AccountId::new([4; 32]);
+        let expected_creator = creator(9, true);
+        let pool_id = compute_pool_pda(
+            CURVE_PROGRAM_ID,
+            token_definition_id,
+            collateral_definition_id,
+            factory_id,
+        );
+        let factory = AccountWithMetadata {
+            account: Account::default(),
+            account_id: factory_id,
+            is_authorized: false,
+        };
+        let definition = AccountWithMetadata {
+            account: Account {
+                program_owner: TOKEN_PROGRAM_ID,
+                ..Account::default()
+            },
+            account_id: token_definition_id,
+            is_authorized: false,
+        };
+        let mint = AccountWithMetadata {
+            account_id: compute_mint_pda(FACTORY_PROGRAM_ID, launch_salt),
+            ..creator(1, false)
+        };
+        let metadata = AccountWithMetadata {
+            account_id: compute_metadata_pda(FACTORY_PROGRAM_ID, launch_salt),
+            ..creator(2, false)
+        };
+        let escrow = AccountWithMetadata {
+            account_id: compute_escrow_pda(FACTORY_PROGRAM_ID, launch_salt),
+            ..creator(3, false)
+        };
+        let creator_holding = AccountWithMetadata {
+            account_id: ata_id(expected_creator.account_id, token_definition_id),
+            ..creator(4, false)
+        };
+        let collateral_definition = AccountWithMetadata {
+            account_id: collateral_definition_id,
+            ..creator(5, false)
+        };
+        let factory_token_ata = AccountWithMetadata {
+            account_id: ata_id(factory_id, token_definition_id),
+            ..creator(6, false)
+        };
+        let factory_collateral_ata = AccountWithMetadata {
+            account_id: ata_id(factory_id, collateral_definition_id),
+            ..creator(7, false)
+        };
+        let pool = AccountWithMetadata {
+            account_id: pool_id,
+            ..creator(8, false)
+        };
+        let pool_token_ata = AccountWithMetadata {
+            account_id: ata_id(pool_id, token_definition_id),
+            ..creator(10, false)
+        };
+        let pool_collateral_ata = AccountWithMetadata {
+            account_id: ata_id(pool_id, collateral_definition_id),
+            ..creator(11, false)
+        };
+
+        let (post_states, calls) = create_factory_pool(
+            factory,
+            definition,
+            mint,
+            metadata,
+            escrow.clone(),
+            expected_creator.clone(),
+            creator_holding,
+            collateral_definition,
+            factory_token_ata,
+            factory_collateral_ata,
+            pool,
+            pool_token_ata,
+            pool_collateral_ata,
+            launch_salt,
+            "Launch".into(),
+            "https://example.test/launch.json".into(),
+            800,
+            150,
+            50,
+            2_000,
+            100,
+            UnlockPolicy::OnClose,
+            FACTORY_PROGRAM_ID,
+            CURVE_PROGRAM_ID,
+        );
+
+        assert_eq!(post_states.len(), 13);
+        let state =
+            FactoryState::try_from(&post_states[0].account().data).expect("factory state parses");
+        assert_eq!(state.total_supply, 1_000);
+        assert_eq!(state.sale_reserve, 800);
+        assert_eq!(state.dex_seed_reserve, 150);
+        assert_eq!(state.creator_allocation, 50);
+        assert!(!state.creator_unlocked);
+
+        let [
+            definition_call,
+            factory_ata_call,
+            factory_transfer,
+            creator_transfer,
+            pool_call,
+        ]: [_; 5] = calls
+            .try_into()
+            .expect("definition, ATA, split, and pool calls");
+        let definition_instruction: token_core::Instruction =
+            risc0_zkvm::serde::from_slice(&definition_call.instruction_data)
+                .expect("token definition instruction parses");
+        match definition_instruction {
+            token_core::Instruction::NewDefinitionWithMetadata {
+                new_definition: NewTokenDefinition::Fungible { name, total_supply },
+                metadata,
+            } => {
+                assert_eq!(name, "Launch");
+                assert_eq!(total_supply, 1_000);
+                assert_eq!(metadata.uri, "https://example.test/launch.json");
+            }
+            _ => panic!("factory must create a fungible definition"),
+        }
+        let ata_instruction: associated_token_account_core::Instruction =
+            risc0_zkvm::serde::from_slice(&factory_ata_call.instruction_data)
+                .expect("factory ATA instruction parses");
+        assert!(matches!(
+            ata_instruction,
+            associated_token_account_core::Instruction::Create { .. }
+        ));
+        let factory_transfer_instruction: token_core::Instruction =
+            risc0_zkvm::serde::from_slice(&factory_transfer.instruction_data)
+                .expect("factory allocation instruction parses");
+        assert!(matches!(
+            factory_transfer_instruction,
+            token_core::Instruction::Transfer {
+                amount_to_transfer: 950
+            }
+        ));
+        let creator_transfer_instruction: token_core::Instruction =
+            risc0_zkvm::serde::from_slice(&creator_transfer.instruction_data)
+                .expect("creator allocation instruction parses");
+        assert!(matches!(
+            creator_transfer_instruction,
+            token_core::Instruction::Transfer {
+                amount_to_transfer: 50
+            }
+        ));
+        assert_eq!(creator_transfer.pre_states[1].account_id, escrow.account_id);
+        let pool_instruction: CurveInstruction =
+            risc0_zkvm::serde::from_slice(&pool_call.instruction_data)
+                .expect("curve create instruction parses");
+        assert!(matches!(
+            pool_instruction,
+            CurveInstruction::CreatePool {
+                token0_amount: 800,
+                token1_amount: 0,
+                owner,
+                ..
+            } if owner == factory_id
+        ));
+        assert_eq!(pool_call.pda_seeds, vec![compute_factory_seed(launch_salt)]);
+    }
+
+    #[test]
+    fn close_relays_to_the_recorded_curve_with_factory_pda_authorization() {
+        let expected_creator = creator(9, true);
+        let (factory, state) = delayed_factory(&expected_creator);
+        let pool = AccountWithMetadata {
+            account_id: state.pool_id,
+            ..creator(1, false)
+        };
+        let (post_states, calls) =
+            close_factory_pool(factory, pool.clone(), expected_creator, FACTORY_PROGRAM_ID);
+
+        assert_eq!(post_states.len(), 3);
+        let [call]: [_; 1] = calls.try_into().expect("one curve close call");
+        assert_eq!(call.program_id, CURVE_PROGRAM_ID);
+        assert_eq!(call.pre_states[0], pool);
+        assert!(call.pre_states[1].is_authorized);
+        assert_eq!(
+            call.pda_seeds,
+            vec![compute_factory_seed(state.launch_salt)]
+        );
+        let instruction: CurveInstruction = risc0_zkvm::serde::from_slice(&call.instruction_data)
+            .expect("curve instruction parses");
+        assert_eq!(instruction, CurveInstruction::ClosePool);
+    }
+
+    #[test]
+    #[should_panic(expected = "Creator commitment does not match launch")]
+    fn close_rejects_another_creator() {
+        let expected_creator = creator(9, true);
+        let (factory, state) = delayed_factory(&expected_creator);
+        let _ = close_factory_pool(
+            factory,
+            AccountWithMetadata {
+                account_id: state.pool_id,
+                ..creator(1, false)
+            },
+            creator(8, true),
+            FACTORY_PROGRAM_ID,
+        );
+    }
+
     #[test]
     fn factory_state_round_trips_without_private_authorization_material() {
         let state = FactoryState {
@@ -613,8 +1068,7 @@ mod tests {
             total_supply: 1000,
             virtual_token_reserve: 2000,
             virtual_collateral_reserve: 100,
-            decimals: 9,
-            symbol: "LZ".into(),
+            curve_program_id: CURVE_PROGRAM_ID,
             unlock_policy: UnlockPolicy::OnClose,
             creator_commitment: [4; 32],
             creator_escrow_id: AccountId::new([5; 32]),

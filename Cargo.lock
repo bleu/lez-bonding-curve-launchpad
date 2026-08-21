@@ -1178,6 +1178,7 @@ dependencies = [
  "borsh",
  "curve-core",
  "lee_core",
+ "pool",
  "risc0-zkvm",
  "serde",
  "token_core",
