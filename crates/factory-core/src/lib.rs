@@ -324,10 +324,38 @@ pub fn create_factory_pool(
         .with_pda_seeds(vec![compute_mint_seed(launch_salt)]),
     );
     if creator_allocation != 0 {
-        let recipient = match unlock_policy {
-            UnlockPolicy::Immediate => creator_holding.clone(),
-            UnlockPolicy::OnClose => creator_escrow.clone(),
+        // An immediate allocation lands in the creator's ATA. Establish it in this
+        // chain before the token transfer so a first-time creator is a valid recipient.
+        if unlock_policy == UnlockPolicy::Immediate {
+            calls.push(ChainedCall::new(
+                ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID,
+                vec![
+                    creator.clone(),
+                    token_definition.clone(),
+                    creator_holding.clone(),
+                ],
+                &associated_token_account_core::Instruction::Create {
+                    ata_program_id: ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID,
+                },
+            ));
+        }
+
+        // The token program claims a default recipient as `Authorized`. The delayed
+        // recipient is our PDA, so the factory must authorize it with its seed.
+        let (recipient, recipient_seed) = match unlock_policy {
+            UnlockPolicy::Immediate => (creator_holding.clone(), None),
+            UnlockPolicy::OnClose => (
+                AccountWithMetadata {
+                    is_authorized: true,
+                    ..creator_escrow.clone()
+                },
+                Some(compute_escrow_seed(launch_salt)),
+            ),
         };
+        let mut allocation_seeds = vec![compute_mint_seed(launch_salt)];
+        if let Some(seed) = recipient_seed {
+            allocation_seeds.push(seed);
+        }
         calls.push(
             ChainedCall::new(
                 token_definition.account.program_owner,
@@ -342,7 +370,7 @@ pub fn create_factory_pool(
                     amount_to_transfer: creator_allocation,
                 },
             )
-            .with_pda_seeds(vec![compute_mint_seed(launch_salt)]),
+            .with_pda_seeds(allocation_seeds),
         );
     }
     // The pool owns exactly the tradeable D portion. The factory retains R.
@@ -916,19 +944,19 @@ mod tests {
         };
 
         let (post_states, calls) = create_factory_pool(
-            factory,
-            definition,
-            mint,
-            metadata,
+            factory.clone(),
+            definition.clone(),
+            mint.clone(),
+            metadata.clone(),
             escrow.clone(),
             expected_creator.clone(),
-            creator_holding,
-            collateral_definition,
-            factory_token_ata,
-            factory_collateral_ata,
-            pool,
-            pool_token_ata,
-            pool_collateral_ata,
+            creator_holding.clone(),
+            collateral_definition.clone(),
+            factory_token_ata.clone(),
+            factory_collateral_ata.clone(),
+            pool.clone(),
+            pool_token_ata.clone(),
+            pool_collateral_ata.clone(),
             launch_salt,
             "Launch".into(),
             "https://example.test/launch.json".into(),
@@ -1000,6 +1028,18 @@ mod tests {
             }
         ));
         assert_eq!(creator_transfer.pre_states[1].account_id, escrow.account_id);
+        assert!(
+            creator_transfer.pre_states[1].is_authorized,
+            "a fresh delayed-allocation escrow must be authorized for Token::Transfer"
+        );
+        assert_eq!(
+            creator_transfer.pda_seeds,
+            vec![
+                compute_mint_seed(launch_salt),
+                compute_escrow_seed(launch_salt),
+            ],
+            "the factory must authorize its escrow PDA for the delayed transfer"
+        );
         let pool_instruction: CurveInstruction =
             risc0_zkvm::serde::from_slice(&pool_call.instruction_data)
                 .expect("curve create instruction parses");
@@ -1013,6 +1053,56 @@ mod tests {
             } if owner == factory_id
         ));
         assert_eq!(pool_call.pda_seeds, vec![compute_factory_seed(launch_salt)]);
+
+        let (_post_states, immediate_calls) = create_factory_pool(
+            factory,
+            definition,
+            mint,
+            metadata,
+            escrow,
+            expected_creator.clone(),
+            creator_holding.clone(),
+            collateral_definition,
+            factory_token_ata,
+            factory_collateral_ata,
+            pool,
+            pool_token_ata,
+            pool_collateral_ata,
+            launch_salt,
+            "Launch".into(),
+            "https://example.test/launch.json".into(),
+            800,
+            150,
+            50,
+            2_000,
+            100,
+            UnlockPolicy::Immediate,
+            FACTORY_PROGRAM_ID,
+            CURVE_PROGRAM_ID,
+        );
+        let [
+            _definition_call,
+            _factory_ata_call,
+            _factory_transfer,
+            creator_ata_call,
+            immediate_creator_transfer,
+            _pool_call,
+        ]: [_; 6] = immediate_calls
+            .try_into()
+            .expect("an immediate allocation initializes the creator ATA before transfer");
+        assert_eq!(
+            creator_ata_call.program_id,
+            ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID
+        );
+        assert_eq!(creator_ata_call.pre_states[0], expected_creator);
+        assert_eq!(
+            creator_ata_call.pre_states[2].account_id,
+            creator_holding.account_id
+        );
+        assert_eq!(
+            immediate_creator_transfer.pre_states[1].account_id,
+            creator_holding.account_id
+        );
     }
 
     #[test]
