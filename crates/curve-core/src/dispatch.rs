@@ -9,7 +9,8 @@ use associated_token_account_core::Instruction as AtaInstruction;
 
 use crate::{
     ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID, Instruction, PoolAccount, compute_pool_pda_seed,
-    pool_create::create_pool, pool_swap::swap_exact_input, update_config::update_config,
+    pool_create::create_pool, pool_lifecycle::close_pool, pool_swap::swap_exact_input,
+    update_config::update_config,
 };
 
 #[must_use]
@@ -118,9 +119,15 @@ pub fn process_instruction(
                 self_program_id,
             )
         }
-        Instruction::SwapExactOutput { .. }
-        | Instruction::ClosePool
-        | Instruction::WithdrawReserves => panic!("instruction handler is not implemented yet"),
+        Instruction::ClosePool => {
+            let [pool, owner] = pre_states
+                .try_into()
+                .expect("ClosePool requires exactly two accounts");
+            (close_pool(pool, owner, self_program_id), vec![])
+        }
+        Instruction::SwapExactOutput { .. } | Instruction::WithdrawReserves => {
+            panic!("instruction handler is not implemented yet")
+        }
     }
 }
 

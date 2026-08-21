@@ -770,6 +770,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
+name = "factory-core"
+version = "0.1.0"
+dependencies = [
+ "associated_token_account_core",
+ "borsh",
+ "curve-core",
+ "lee_core",
+ "risc0-zkvm",
+ "serde",
+ "token_core",
+]
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1068,6 +1081,7 @@ name = "launchpad_programs"
 version = "0.1.0"
 dependencies = [
  "curve-core",
+ "factory-core",
  "lee_core",
  "risc0-zkvm",
 ]
