@@ -74,6 +74,7 @@ pub enum Instruction {
     /// - Pool output ATA
     /// - Participant output ATA
     /// - Treasury input ATA
+    /// - Trusted LEZ clock
     SwapExactInput {
         amount_in: u128,
         min_amount_out: u128,

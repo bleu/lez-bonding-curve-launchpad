@@ -98,9 +98,10 @@ pub fn process_instruction(
                 pool_token_out_ata,
                 participant_token_out_ata,
                 treasury_token_in_ata,
+                clock,
             ] = pre_states
                 .try_into()
-                .expect("SwapExactInput requires exactly eight accounts");
+                .expect("SwapExactInput requires exactly nine accounts");
             settle_exact_input(
                 pool,
                 config,
@@ -110,6 +111,7 @@ pub fn process_instruction(
                 pool_token_out_ata,
                 participant_token_out_ata,
                 treasury_token_in_ata,
+                clock,
                 amount_in,
                 min_amount_out,
                 token_in,
@@ -135,6 +137,7 @@ fn settle_exact_input(
     pool_token_out_ata: AccountWithMetadata,
     participant_token_out_ata: AccountWithMetadata,
     treasury_token_in_ata: AccountWithMetadata,
+    clock: AccountWithMetadata,
     amount_in: u128,
     min_amount_out: u128,
     token_in: lee_core::account::AccountId,
@@ -149,7 +152,7 @@ fn settle_exact_input(
     let (posts, settlement) = swap_exact_input(
         pool.clone(),
         config,
-        None,
+        Some(clock),
         amount_in,
         min_amount_out,
         token_in,

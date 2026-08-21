@@ -135,6 +135,24 @@ fn holding_ata(
     )
 }
 
+fn trusted_clock(timestamp: u64) -> AccountWithMetadata {
+    AccountWithMetadata {
+        account: Account {
+            data: Data::try_from(
+                clock_core::ClockAccountData {
+                    block_id: 7,
+                    timestamp,
+                }
+                .to_bytes(),
+            )
+            .expect("clock data fits"),
+            ..Account::default()
+        },
+        is_authorized: false,
+        account_id: clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID,
+    }
+}
+
 struct CreatePoolAccounts {
     pool: AccountWithMetadata,
     owner: AccountWithMetadata,
@@ -737,7 +755,7 @@ fn exact_input_dispatch_settles_the_gross_input_fee_and_output_atomically() {
                 token0_definition_id: token0,
                 token1_definition_id: token1,
                 owner,
-                pool: Pool::create(800, 100, 1000, 100, None).expect("valid pool"),
+                pool: Pool::create(800, 100, 1000, 100, Some(42)).expect("valid pool"),
             }),
             ..Account::default()
         },
@@ -760,6 +778,7 @@ fn exact_input_dispatch_settles_the_gross_input_fee_and_output_atomically() {
             pool_token1.clone(),
             participant_token1.clone(),
             treasury_token0.clone(),
+            trusted_clock(41),
         ],
         Instruction::SwapExactInput {
             amount_in: 250,
