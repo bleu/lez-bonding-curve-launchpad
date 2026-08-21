@@ -38,6 +38,11 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
 
+# GTM-514's property suite also runs under `--release`; keep arithmetic failures
+# observable there instead of allowing Rust's default release-mode wrapping.
+[profile.release]
+overflow-checks = true
+
 [lints]
 workspace = true
 
