@@ -1337,10 +1337,11 @@ name = "curve-core"
 version = "0.1.0"
 dependencies = [
  "borsh",
+ "clock_core",
  "lee",
  "lee_core",
+ "pool",
  "risc0-zkvm",
- "sale",
  "serde",
 ]
 
@@ -5328,6 +5329,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pool"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "curve-math",
+]
+
+[[package]]
 name = "portable-atomic"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6468,14 +6477,6 @@ dependencies = [
  "thiserror 2.0.20",
  "toml",
  "yaml-rust2",
-]
-
-[[package]]
-name = "sale"
-version = "0.1.0"
-dependencies = [
- "borsh",
- "curve-math",
 ]
 
 [[package]]

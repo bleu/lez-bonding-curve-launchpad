@@ -461,6 +461,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "clock_core"
+version = "0.1.0"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?rev=a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a#a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a"
+dependencies = [
+ "borsh",
+ "lee_core",
+]
+
+[[package]]
 name = "cobs"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -544,9 +553,10 @@ name = "curve-core"
 version = "0.1.0"
 dependencies = [
  "borsh",
+ "clock_core",
  "lee_core",
+ "pool",
  "risc0-zkvm",
- "sale",
  "serde",
 ]
 
@@ -1225,6 +1235,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
+name = "pool"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "curve-math",
+]
+
+[[package]]
 name = "portable-atomic"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1621,14 +1639,6 @@ name = "rustversion"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
-
-[[package]]
-name = "sale"
-version = "0.1.0"
-dependencies = [
- "borsh",
- "curve-math",
-]
 
 [[package]]
 name = "schemars"

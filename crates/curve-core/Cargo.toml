@@ -9,9 +9,10 @@ license = "MIT OR Apache-2.0"
 # `riscv32im-risc0-zkvm-elf`. Keep it free of host-only features.
 [dependencies]
 borsh.workspace = true
+clock_core.workspace = true
 lee_core.workspace = true
 risc0-zkvm.workspace = true
-sale.workspace = true
+pool.workspace = true
 serde.workspace = true
 
 # Adapter-level tests live here rather than in the guest crate, which the root

@@ -6,11 +6,15 @@ use lee_core::{
     program::{Claim, ProgramId},
 };
 
-use sale::Sale;
+use pool::Pool;
 
 use crate::{
-    Config, GENESIS_ADMIN, Instruction, SaleAccount, compute_config_pda, compute_config_pda_seed,
-    compute_sale_pda, update_config::update_config,
+    Config, GENESIS_ADMIN, Instruction, PoolAccount, compute_config_pda, compute_config_pda_seed,
+    compute_pool_pda,
+    pool_create::create_pool,
+    pool_lifecycle::{close_pool, withdraw_reserves},
+    pool_swap::{swap_exact_input, swap_exact_output},
+    update_config::update_config,
 };
 
 const CURVE_PROGRAM_ID: ProgramId = [7; 8];
@@ -148,7 +152,7 @@ fn update_config_rejects_a_fee_above_the_denominator() {
     );
 }
 
-// Zero is RFP text ("sale creation free" plus a free curve is a legal config), and
+// Zero is legal (pool creation remains free and a fee-free pool is valid), and
 // 10,000 is the denominator itself.
 #[test]
 fn fee_boundaries_are_legal() {
@@ -238,17 +242,235 @@ fn first_update_config_initializes_the_config() {
 }
 
 #[test]
-fn sale_state_round_trips_through_account_data() {
-    let sale_account = SaleAccount {
-        token_definition_id: AccountId::new([1; 32]),
-        collateral_definition_id: AccountId::new([2; 32]),
-        sale: Sale::create(800, 200, 1000, 100).expect("valid sale"),
+fn pool_state_round_trips_with_ordered_tokens_owner_and_optional_expiry() {
+    let pool_account = PoolAccount {
+        token0_definition_id: AccountId::new([1; 32]),
+        token1_definition_id: AccountId::new([2; 32]),
+        owner: AccountId::new([3; 32]),
+        pool: Pool::create(800, 25, 1000, 100, Some(42)).expect("valid pool"),
     };
-    let data = Data::from(&sale_account);
+    let data = Data::from(&pool_account);
     assert_eq!(
-        SaleAccount::try_from(&data).expect("data parses"),
-        sale_account
+        PoolAccount::try_from(&data).expect("data parses"),
+        pool_account
     );
+}
+
+#[test]
+fn stored_pool_owner_can_close_the_pool() {
+    let owner = AccountId::new([3; 32]);
+    let token0 = AccountId::new([1; 32]);
+    let token1 = AccountId::new([2; 32]);
+    let pool_account = PoolAccount {
+        token0_definition_id: token0,
+        token1_definition_id: token1,
+        owner,
+        pool: Pool::create(800, 25, 1000, 100, None).expect("valid pool"),
+    };
+    let pool = AccountWithMetadata {
+        account: Account {
+            program_owner: CURVE_PROGRAM_ID,
+            data: Data::from(&pool_account),
+            ..Account::default()
+        },
+        is_authorized: false,
+        account_id: compute_pool_pda(CURVE_PROGRAM_ID, token0, token1),
+    };
+
+    let [post]: [_; 1] = close_pool(pool, signer(owner), CURVE_PROGRAM_ID)
+        .try_into()
+        .expect("one post state");
+    let closed = PoolAccount::try_from(&post.account().data).expect("valid pool state");
+    assert!(!closed.pool.open);
+}
+
+#[should_panic(expected = "Authority is not the pool owner")]
+#[test]
+fn an_unrelated_signer_cannot_close_the_pool() {
+    let owner = AccountId::new([3; 32]);
+    let token0 = AccountId::new([1; 32]);
+    let token1 = AccountId::new([2; 32]);
+    let pool_account = PoolAccount {
+        token0_definition_id: token0,
+        token1_definition_id: token1,
+        owner,
+        pool: Pool::create(800, 25, 1000, 100, None).expect("valid pool"),
+    };
+    let pool = AccountWithMetadata {
+        account: Account {
+            program_owner: CURVE_PROGRAM_ID,
+            data: Data::from(&pool_account),
+            ..Account::default()
+        },
+        is_authorized: false,
+        account_id: compute_pool_pda(CURVE_PROGRAM_ID, token0, token1),
+    };
+    let _ = close_pool(pool, intruder_signer(), CURVE_PROGRAM_ID);
+}
+
+#[test]
+fn expired_pool_owner_can_withdraw_both_reserves_without_closing_first() {
+    let owner = AccountId::new([3; 32]);
+    let token0 = AccountId::new([1; 32]);
+    let token1 = AccountId::new([2; 32]);
+    let pool_account = PoolAccount {
+        token0_definition_id: token0,
+        token1_definition_id: token1,
+        owner,
+        pool: Pool::create(800, 25, 1000, 100, Some(42)).expect("valid pool"),
+    };
+    let pool = AccountWithMetadata {
+        account: Account {
+            program_owner: CURVE_PROGRAM_ID,
+            data: Data::from(&pool_account),
+            ..Account::default()
+        },
+        is_authorized: false,
+        account_id: compute_pool_pda(CURVE_PROGRAM_ID, token0, token1),
+    };
+    let clock = AccountWithMetadata {
+        account: Account {
+            data: Data::try_from(
+                clock_core::ClockAccountData {
+                    block_id: 7,
+                    timestamp: 42,
+                }
+                .to_bytes(),
+            )
+            .expect("clock data fits"),
+            ..Account::default()
+        },
+        is_authorized: false,
+        account_id: clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID,
+    };
+
+    let (posts, withdrawn) = withdraw_reserves(pool, signer(owner), Some(clock), CURVE_PROGRAM_ID);
+    assert_eq!(
+        (withdrawn.token0_amount, withdrawn.token1_amount),
+        (800, 25)
+    );
+    let [post]: [_; 1] = posts.try_into().expect("one post state");
+    let retired = PoolAccount::try_from(&post.account().data).expect("valid pool state");
+    assert!(retired.pool.retired);
+}
+
+#[test]
+fn exact_input_handler_selects_direction_and_pairs_the_fee_with_token_in() {
+    let owner = AccountId::new([3; 32]);
+    let token0 = AccountId::new([1; 32]);
+    let token1 = AccountId::new([2; 32]);
+    let pool_account = PoolAccount {
+        token0_definition_id: token0,
+        token1_definition_id: token1,
+        owner,
+        pool: Pool::create(800, 100, 1000, 100, None).expect("valid pool"),
+    };
+    let pool = AccountWithMetadata {
+        account: Account {
+            program_owner: CURVE_PROGRAM_ID,
+            data: Data::from(&pool_account),
+            ..Account::default()
+        },
+        is_authorized: false,
+        account_id: compute_pool_pda(CURVE_PROGRAM_ID, token0, token1),
+    };
+
+    let (posts, settlement) = swap_exact_input(
+        pool,
+        initialized_config(new_admin()),
+        None,
+        250,
+        19,
+        token0,
+        CURVE_PROGRAM_ID,
+    );
+    assert_eq!(settlement.token_in, token0);
+    assert_eq!(settlement.token_out, token1);
+    assert_eq!(settlement.fee, 6);
+    assert_eq!(settlement.treasury, new_treasury());
+    let [post]: [_; 1] = posts.try_into().expect("one post state");
+    let updated = PoolAccount::try_from(&post.account().data).expect("valid pool state");
+    assert_eq!(
+        (updated.pool.real_reserve0, updated.pool.real_reserve1),
+        (1044, 81)
+    );
+}
+
+#[test]
+fn exact_output_handler_caps_fee_inclusive_input_in_the_reverse_direction() {
+    let owner = AccountId::new([3; 32]);
+    let token0 = AccountId::new([1; 32]);
+    let token1 = AccountId::new([2; 32]);
+    let pool_account = PoolAccount {
+        token0_definition_id: token0,
+        token1_definition_id: token1,
+        owner,
+        pool: Pool::create(800, 100, 1000, 100, None).expect("valid pool"),
+    };
+    let pool = AccountWithMetadata {
+        account: Account {
+            program_owner: CURVE_PROGRAM_ID,
+            data: Data::from(&pool_account),
+            ..Account::default()
+        },
+        is_authorized: false,
+        account_id: compute_pool_pda(CURVE_PROGRAM_ID, token0, token1),
+    };
+    let config = AccountWithMetadata {
+        account: Account {
+            program_owner: CURVE_PROGRAM_ID,
+            data: Data::from(&Config {
+                admin: new_admin(),
+                fee_bps: 1_000,
+                treasury: new_treasury(),
+            }),
+            ..Account::default()
+        },
+        is_authorized: false,
+        account_id: compute_config_pda(CURVE_PROGRAM_ID),
+    };
+
+    let (_, settlement) = swap_exact_output(pool, config, None, 200, 27, token1, CURVE_PROGRAM_ID);
+    assert_eq!(settlement.token_in, token1);
+    assert_eq!(settlement.token_out, token0);
+    assert_eq!(
+        (settlement.amount_in, settlement.amount_out, settlement.fee),
+        (27, 200, 2)
+    );
+}
+
+#[test]
+fn direct_creation_funds_both_ordered_reserves_and_stores_the_selected_owner() {
+    let owner = AccountId::new([3; 32]);
+    let token0 = AccountId::new([1; 32]);
+    let token1 = AccountId::new([2; 32]);
+    let pool = AccountWithMetadata {
+        account: Account::default(),
+        is_authorized: false,
+        account_id: compute_pool_pda(CURVE_PROGRAM_ID, token0, token1),
+    };
+
+    let (posts, funding) = create_pool(
+        pool,
+        token0,
+        token1,
+        800,
+        25,
+        1000,
+        100,
+        Some(42),
+        owner,
+        CURVE_PROGRAM_ID,
+    );
+    assert_eq!((funding.token0_amount, funding.token1_amount), (800, 25));
+    let [post]: [_; 1] = posts.try_into().expect("one post state");
+    assert_eq!(
+        post.required_claim(),
+        Some(Claim::Pda(crate::compute_pool_pda_seed(token0, token1)))
+    );
+    let created = PoolAccount::try_from(&post.account().data).expect("valid pool state");
+    assert_eq!(created.owner, owner);
+    assert_eq!(created.pool.close_timestamp, Some(42));
 }
 
 #[test]
@@ -260,23 +482,27 @@ fn every_instruction_survives_the_guest_wire_format() {
             fee_bps: 250,
             treasury: new_treasury(),
         },
-        Instruction::CreateSale {
-            sale_reserve: 800,
-            dex_seed_reserve: 200,
-            virtual_token_reserve: 1000,
-            virtual_collateral_reserve: 100,
+        Instruction::CreatePool {
+            token0_amount: 800,
+            token1_amount: 25,
+            virtual_reserve0: 1000,
+            virtual_reserve1: 100,
+            close_timestamp: Some(42),
+            owner: AccountId::new([3; 32]),
             curve_program_id: [7; 8],
         },
-        Instruction::Buy {
-            collateral_in: 25,
-            min_tokens_out: 190,
+        Instruction::SwapExactInput {
+            amount_in: 25,
+            min_amount_out: 190,
+            token_in: AccountId::new([1; 32]),
         },
-        Instruction::Sell {
-            tokens_in: 250,
-            min_collateral_out: 18,
+        Instruction::SwapExactOutput {
+            amount_out: 250,
+            max_amount_in: 18,
+            token_in: AccountId::new([2; 32]),
         },
-        Instruction::Close,
-        Instruction::Withdraw,
+        Instruction::ClosePool,
+        Instruction::WithdrawReserves,
     ];
     for instruction in instructions {
         let words = risc0_zkvm::serde::to_vec(&instruction).expect("instruction serialises");
@@ -286,12 +512,11 @@ fn every_instruction_survives_the_guest_wire_format() {
 }
 
 #[test]
-fn the_sale_pda_hashes_the_pair_in_fixed_order() {
-    // Token and collateral are different roles: swapping them is a different sale.
-    let token = AccountId::new([1; 32]);
-    let collateral = AccountId::new([2; 32]);
+fn the_pool_pda_hashes_the_pair_in_fixed_order() {
+    let token0 = AccountId::new([1; 32]);
+    let token1 = AccountId::new([2; 32]);
     assert_ne!(
-        compute_sale_pda(CURVE_PROGRAM_ID, token, collateral),
-        compute_sale_pda(CURVE_PROGRAM_ID, collateral, token)
+        compute_pool_pda(CURVE_PROGRAM_ID, token0, token1),
+        compute_pool_pda(CURVE_PROGRAM_ID, token1, token0)
     );
 }
