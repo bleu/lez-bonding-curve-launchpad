@@ -8,11 +8,13 @@ license = "MIT OR Apache-2.0"
 # on this crate from its own workspace, so every dependency here is also compiled for
 # `riscv32im-risc0-zkvm-elf`. Keep it free of host-only features.
 [dependencies]
+associated_token_account_core.workspace = true
 borsh.workspace = true
 lee_core.workspace = true
 risc0-zkvm.workspace = true
 sale.workspace = true
 serde.workspace = true
+token_core.workspace = true
 
 # Adapter-level tests live here rather than in the guest crate, which the root
 # workspace excludes and `cargo test --workspace` therefore never reaches.

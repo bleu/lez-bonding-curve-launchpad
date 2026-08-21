@@ -1,14 +1,8 @@
-[package]
-name = "lez-bonding-curve-launchpad"
-version = "0.1.0"
-edition = "2024"
-license = "MIT OR Apache-2.0"
-
 # `methods/` is excluded so the risc0 guest crate builds under its own
 # toolchain and its own `[profile.release]`. `lgs build` compiles it separately.
 [workspace]
 resolver = "3"
-members = [".", "crates/*", "cli"]
+members = ["crates/*", "cli"]
 exclude = ["methods", "methods/guest"]
 
 [workspace.dependencies]
@@ -19,9 +13,8 @@ lee = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", re
 # getrandom into the riscv32 build. LEZ declares it the same way for the same
 # reason; on the host side `lee` already enables it.
 lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a" }
-wallet = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a" }
-common = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a" }
-sequencer_service_rpc = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a", default-features = false, features = ["client"] }
+associated_token_account_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a" }
+token_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a" }
 
 curve-math = { path = "crates/curve-math" }
 sale = { path = "crates/sale" }
@@ -33,19 +26,6 @@ borsh = { version = "1.8", features = ["derive"] }
 clap = { version = "4", features = ["derive"] }
 risc0-zkvm = { version = "3.0.5", default-features = false, features = ["std"] }
 serde = { version = "1", features = ["derive"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
-
-[lints]
-workspace = true
-
-[dependencies]
-launchpad-client.workspace = true
-lee.workspace = true
-wallet.workspace = true
-common.workspace = true
-sequencer_service_rpc.workspace = true
-anyhow.workspace = true
-tokio.workspace = true

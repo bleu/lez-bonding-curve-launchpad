@@ -19,6 +19,8 @@ use lee_core::{
 use sale::Sale;
 use serde::{Deserialize, Serialize};
 
+pub mod create_sale;
+pub mod dispatch;
 pub mod update_config;
 
 #[cfg(test)]
@@ -40,13 +42,25 @@ pub enum Instruction {
         treasury: AccountId,
     },
     /// Opens a sale over the token pair handed to it. Handler: GTM-509.
+    ///
+    /// Required accounts:
+    /// - Sale PDA (uninitialized)
+    /// - Creator authority (authorized)
+    /// - Project-token definition
+    /// - Collateral-token definition
+    /// - Creator's project-token ATA
+    /// - Sale PDA's project-token ATA (uninitialized)
+    /// - Sale PDA's collateral-token ATA (uninitialized)
     CreateSale {
         sale_reserve: u128,
         dex_seed_reserve: u128,
         virtual_token_reserve: u128,
         virtual_collateral_reserve: u128,
-        /// The program cannot see its own id; PDA derivation needs it passed in.
+        /// Included in the wire instruction following the LEZ program convention;
+        /// dispatch verifies it against the executing program id.
         curve_program_id: ProgramId,
+        /// The ATA program is independently deployed, so its id is supplied by the client.
+        ata_program_id: ProgramId,
     },
     /// Buys from the curve, auto-closing on the buy that exhausts the sale
     /// reserve. Handler: GTM-510.
@@ -114,12 +128,14 @@ pub fn compute_config_pda_seed() -> PdaSeed {
     PdaSeed::new(bytes)
 }
 
-/// The sale PDA's whole contents: the token pair the sale runs over, and the
-/// [`Sale`] state machine that prices it.
+/// The sale PDA's whole contents: the token pair, a privacy-preserving creator
+/// commitment, and the [`Sale`] state machine that prices it.
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct SaleAccount {
     pub token_definition_id: AccountId,
     pub collateral_definition_id: AccountId,
+    /// Commits to the creator without publishing the creator account id.
+    pub creator_commitment: [u8; 32],
     pub sale: Sale,
 }
 
@@ -175,4 +191,19 @@ pub fn compute_sale_pda_seed(
             .try_into()
             .expect("Hash output must be exactly 32 bytes long"),
     )
+}
+
+/// Commits to the creator authority for this specific sale while keeping the
+/// authority's account id out of public sale state.
+#[must_use]
+pub fn compute_creator_commitment(creator_id: AccountId, sale_id: AccountId) -> [u8; 32] {
+    use risc0_zkvm::sha::{Impl, Sha256 as _};
+
+    let mut bytes = [0; 64];
+    bytes[..32].copy_from_slice(&creator_id.to_bytes());
+    bytes[32..].copy_from_slice(&sale_id.to_bytes());
+    Impl::hash_bytes(&bytes)
+        .as_bytes()
+        .try_into()
+        .expect("hash output is exactly 32 bytes")
 }
