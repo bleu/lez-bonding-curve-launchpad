@@ -10,12 +10,12 @@ use std::{
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, builder::Styles};
 use launchpad_client::{
-    BuyRequest, CreateSaleRequest, SellRequest, build_buy_invocation,
+    BuyRequest, CreateSaleRequest, PrivateBuyRequest, SellRequest, build_buy_invocation,
     build_claim_creator_allocation_invocation, build_close_factory_pool_invocation,
     build_create_sale_invocation, build_sell_invocation,
     build_withdraw_factory_proceeds_invocation, load_curve_config, load_factory_pool,
     load_factory_state, load_program, parse_account_id, quote_buy, quote_buy_with_collateral,
-    quote_sell, submit_public_invocation,
+    quote_sell, submit_public_invocation, validate_private_buy_request,
 };
 use serde::Serialize;
 use wallet::WalletCore;
@@ -77,6 +77,8 @@ enum Command {
     Withdraw(FactoryLifecycleArgs),
     Claim(FactoryLifecycleArgs),
     Buy(BuyArgs),
+    /// Buy through the SDK-owned private lifecycle.
+    PrivateBuy(PrivateBuyArgs),
     Sell(SellArgs),
     Price(PriceArgs),
     Status(LaunchReadArgs),
@@ -147,6 +149,31 @@ struct BuyArgs {
     tokens: u128,
     #[arg(long = "max-collateral")]
     max_collateral: u128,
+}
+
+#[derive(Debug, Args)]
+struct PrivateBuyArgs {
+    #[command(flatten)]
+    launch: LaunchArgs,
+    #[arg(long = "collateral-definition")]
+    collateral_definition: String,
+    #[arg(long)]
+    tokens: u128,
+    #[arg(long = "max-collateral")]
+    max_collateral: u128,
+    /// Owned private account providing collateral and native gas.
+    #[arg(long = "from-private")]
+    from_private: String,
+    /// Owned private account that receives the purchased launch tokens.
+    #[arg(long = "to-private")]
+    to_private: Option<String>,
+    /// Native units required for the transient public account's transaction fees.
+    #[arg(long = "gas-reserve")]
+    gas_reserve: u128,
+    #[arg(long = "factory-program-path")]
+    factory_program_path: PathBuf,
+    #[arg(long = "curve-program-path")]
+    curve_program_path: PathBuf,
 }
 
 #[derive(Debug, Args)]
@@ -280,6 +307,7 @@ async fn run(json: bool, cli: Cli) -> Result<()> {
         Command::Withdraw(args) => withdraw_factory_proceeds(json, args).await,
         Command::Claim(args) => claim_creator_allocation(json, args).await,
         Command::Buy(args) => buy(json, args).await,
+        Command::PrivateBuy(args) => private_buy(args).await,
         Command::Sell(args) => sell(json, args).await,
         Command::Price(args) => price(json, args).await,
         Command::Status(args) | Command::SaleInfo(args) => sale_snapshot(json, args).await,
@@ -498,6 +526,12 @@ async fn buy(json: bool, args: BuyArgs) -> Result<()> {
         transaction_hash,
         args.trade.launch.launch_salt,
     )
+}
+
+async fn private_buy(args: PrivateBuyArgs) -> Result<()> {
+    validate_private_buy_request(PrivateBuyRequest {
+        gas_reserve: args.gas_reserve,
+    })
 }
 
 async fn sell(json: bool, args: SellArgs) -> Result<()> {
@@ -721,6 +755,28 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn private_buy_requires_private_source_and_explicit_gas_reserve() {
+        let command = Cli::command();
+        let private_buy = command
+            .get_subcommands()
+            .find(|subcommand| subcommand.get_name() == "private-buy")
+            .expect("private buy command should exist");
+
+        assert!(
+            private_buy
+                .get_arguments()
+                .any(|argument| argument.get_long() == Some("from-private")
+                    && argument.is_required_set())
+        );
+        assert!(
+            private_buy
+                .get_arguments()
+                .any(|argument| argument.get_long() == Some("gas-reserve")
+                    && argument.is_required_set())
+        );
     }
 
     #[test]

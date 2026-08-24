@@ -71,6 +71,29 @@ pub struct BuyRequest {
     pub max_amount_in: u128,
 }
 
+/// Inputs accepted by the SDK's private-buy boundary.
+///
+/// This boundary intentionally checks platform support before a caller can move
+/// either asset. It prevents a private-buy caller from weakening the required
+/// atomic collateral-and-gas deshield into separate transactions.
+#[derive(Debug, Clone, Copy)]
+pub struct PrivateBuyRequest {
+    /// Native units that must accompany collateral in the initial deshield.
+    pub gas_reserve: u128,
+}
+
+/// Rejects private buy until the SDK has a validated atomic initial-funding
+/// implementation for the pinned LEZ release.
+pub fn validate_private_buy_request(request: PrivateBuyRequest) -> Result<()> {
+    if request.gas_reserve == 0 {
+        return Err(anyhow!("private buy requires a non-zero gas reserve"));
+    }
+
+    Err(anyhow!(
+        "private buy is unavailable: this SDK has no validated atomic custom-collateral-and-native-gas deshield implementation for LEZ v0.2.0"
+    ))
+}
+
 /// Exact-input sale inputs. Launch tokens are always the input definition for a factory launch.
 #[derive(Debug, Clone, Copy)]
 pub struct SellRequest {
@@ -812,5 +835,25 @@ mod tests {
             invocation.instruction,
             factory_core::Instruction::WithdrawFactoryProceeds
         ));
+    }
+
+    #[test]
+    fn private_buy_refuses_to_split_collateral_and_native_gas_deshielding() {
+        let error =
+            super::validate_private_buy_request(super::PrivateBuyRequest { gas_reserve: 1 })
+                .expect_err(
+                    "the SDK must reject until its atomic deshield implementation is validated",
+                );
+
+        assert!(error.to_string().contains("no validated atomic"));
+    }
+
+    #[test]
+    fn private_buy_requires_an_explicit_nonzero_gas_reserve() {
+        let error =
+            super::validate_private_buy_request(super::PrivateBuyRequest { gas_reserve: 0 })
+                .expect_err("zero gas would make the public account unusable");
+
+        assert!(error.to_string().contains("non-zero gas reserve"));
     }
 }
