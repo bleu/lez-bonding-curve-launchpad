@@ -3,7 +3,7 @@
 //! `launchpad-client`.
 
 use anyhow::Result;
-use clap::{Args, Parser, Subcommand, ValueEnum, builder::Styles};
+use clap::{Args, Parser, Subcommand, builder::Styles};
 
 #[derive(Debug, Parser)]
 #[command(name = "launchpad", version, about = "Bonding curve launchpad on the Logos Execution Zone", styles = Styles::styled())]
@@ -22,7 +22,7 @@ enum Command {
     CreateSale(CreateSaleArgs),
     Close(LaunchArgs),
     Withdraw(LaunchArgs),
-    Unlock(LaunchArgs),
+    Claim(LaunchArgs),
     Buy(TradeArgs),
     Sell(SellArgs),
     Price(PriceArgs),
@@ -48,8 +48,8 @@ struct CreateSaleArgs {
     virtual_token_reserve: u128,
     #[arg(long = "virtual-collateral-reserve", alias = "vc")]
     virtual_collateral_reserve: u128,
-    #[arg(long, value_enum, default_value_t = UnlockPolicy::Immediate)]
-    unlock_policy: UnlockPolicy,
+    #[arg(long = "end-timestamp")]
+    end_timestamp: Option<u64>,
     #[arg(long = "collateral-definition")]
     collateral_definition: String,
 }
@@ -92,12 +92,6 @@ struct PriceArgs {
     collateral: Option<u128>,
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum UnlockPolicy {
-    Immediate,
-    OnClose,
-}
-
 fn parse_launch_salt(raw: &str) -> Result<[u8; 32], String> {
     let bytes = hex::decode(raw).map_err(|_| "launch salt must be hexadecimal".to_owned())?;
     bytes
@@ -122,7 +116,7 @@ mod tests {
             "create-sale",
             "close",
             "withdraw",
-            "unlock",
+            "claim",
             "buy",
             "sell",
             "price",

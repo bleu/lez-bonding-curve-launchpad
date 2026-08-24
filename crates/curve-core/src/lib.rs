@@ -58,6 +58,7 @@ pub enum Instruction {
         virtual_reserve0: u128,
         virtual_reserve1: u128,
         close_timestamp: Option<u64>,
+        close_on_depletion: Option<DepletionSide>,
         owner: AccountId,
         /// Included in the wire instruction following the LEZ program convention;
         /// dispatch verifies it against the executing program id.
@@ -90,6 +91,22 @@ pub enum Instruction {
     ClosePool,
     /// Owner-only full withdrawal after manual closure or expiry.
     WithdrawReserves,
+}
+
+/// Wire-level side selection for optional depletion closure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DepletionSide {
+    Token0,
+    Token1,
+}
+
+impl From<DepletionSide> for pool::TokenSide {
+    fn from(side: DepletionSide) -> Self {
+        match side {
+            DepletionSide::Token0 => Self::Token0,
+            DepletionSide::Token1 => Self::Token1,
+        }
+    }
 }
 
 /// The admin key allowed to initialize the config. Compiled in, so it is part of the
