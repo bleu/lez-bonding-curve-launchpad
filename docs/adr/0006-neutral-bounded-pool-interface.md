@@ -24,4 +24,4 @@ This is an intentional breaking PoC wire/state change. Compatibility aliases are
 
 `crates/pool` replaces the sale state machine, `PoolAccount` replaces `SaleAccount`, and pricing functions and tests use exact-input/exact-output vocabulary. `CONTEXT.md` defines the AMM/factory language boundary.
 
-The factory is not implemented in the current repository snapshot. When added, it must depend on this interface rather than adding launch allocation or creator-privacy fields back to pool state.
+`crates/factory-core` implements this mapping through the curve interface. It must not add launch allocation or creator-commitment fields back to pool state.
