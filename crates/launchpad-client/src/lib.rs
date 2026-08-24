@@ -82,6 +82,28 @@ pub struct SellRequest {
     pub min_amount_out: u128,
 }
 
+/// Builds the curve configuration initialization/update call.
+#[must_use]
+pub fn build_update_config_invocation(
+    curve_program_id: ProgramId,
+    admin: AccountId,
+    pool_fee_bps: u16,
+    protocol_fee_bps: u16,
+    treasury: AccountId,
+) -> PublicInvocation<CurveInstruction> {
+    PublicInvocation {
+        program_id: curve_program_id,
+        account_ids: vec![compute_config_pda(curve_program_id), admin],
+        signer_accounts: vec![admin],
+        instruction: CurveInstruction::UpdateConfig {
+            admin,
+            pool_fee_bps,
+            protocol_fee_bps,
+            treasury,
+        },
+    }
+}
+
 /// Quotes an exact-output purchase against a snapshot of the current pool and fee config.
 /// The quote is informational only; callers enforce its cap through `BuyRequest` on-chain.
 pub fn quote_buy(
@@ -488,8 +510,8 @@ mod tests {
     use super::{
         BuyRequest, CreateSaleRequest, SellRequest, build_buy_invocation,
         build_close_factory_pool_invocation, build_create_sale_invocation, build_sell_invocation,
-        build_unlock_creator_allocation_invocation, build_withdraw_factory_pool_invocation,
-        quote_buy,
+        build_unlock_creator_allocation_invocation, build_update_config_invocation,
+        build_withdraw_factory_pool_invocation, quote_buy,
     };
 
     const FACTORY_PROGRAM_ID: [u32; 8] = [7; 8];
@@ -536,6 +558,29 @@ mod tests {
         );
         assert_eq!(invocation.account_ids.len(), 13);
         assert_eq!(invocation.account_ids[7], collateral_definition);
+    }
+
+    #[test]
+    fn config_initialization_uses_the_curve_config_pda_and_admin_signature() {
+        let admin = AccountId::new([9; 32]);
+        let treasury = AccountId::new([4; 32]);
+        let invocation = build_update_config_invocation(CURVE_PROGRAM_ID, admin, 25, 75, treasury);
+
+        assert_eq!(invocation.program_id, CURVE_PROGRAM_ID);
+        assert_eq!(
+            invocation.account_ids,
+            vec![curve_core::compute_config_pda(CURVE_PROGRAM_ID), admin,]
+        );
+        assert_eq!(invocation.signer_accounts, vec![admin]);
+        assert!(matches!(
+            invocation.instruction,
+            curve_core::Instruction::UpdateConfig {
+                admin: actual_admin,
+                pool_fee_bps: 25,
+                protocol_fee_bps: 75,
+                treasury: actual_treasury,
+            } if actual_admin == admin && actual_treasury == treasury
+        ));
     }
 
     #[test]

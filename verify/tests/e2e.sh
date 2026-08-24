@@ -56,6 +56,14 @@ case "$*" in
   "localnet reset --yes --reset-wallet")
     touch "$E2E_RESET_COMPLETE"
     ;;
+  "wallet -- account new public")
+    count=$(cat "$E2E_ACCOUNT_COUNT")
+    count=$((count + 1))
+    printf '%s\n' "$count" >"$E2E_ACCOUNT_COUNT"
+    printf 'Public/account-%s\n' "$count"
+    ;;
+  wallet\ topup\ Public/* | wallet\ --\ token\ new\ * | wallet\ --\ token\ mint\ *)
+    ;;
   "build" | "deploy curve --json" | "deploy factory --json")
     if [[ "$*" == "deploy curve --json" && -n "${E2E_CURVE_DEPLOY_FAILURE:-}" ]]; then
       printf '%s\n' '{"deploys":[{"status":"failed","error":"submission rejected"}]}'
@@ -71,18 +79,47 @@ case "$*" in
 esac
 EOF
 chmod +x "$tmp_dir/bin/lgs"
+cat >"$tmp_dir/bin/find" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *curve.bin*) printf '%s\n' 'target/curve.bin' ;;
+  *factory.bin*) printf '%s\n' 'target/factory.bin' ;;
+  *) exit 0 ;;
+esac
+EOF
+chmod +x "$tmp_dir/bin/find"
 cat >"$tmp_dir/bin/cargo" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$E2E_COMMAND_LOG"
-printf '%s\n' '{"launch_salt":"0000000000000000000000000000000000000000000000000000000000000001"}'
+case "$*" in
+  *' price '*) printf '%s\n' '{"amount_in":100}' ;;
+  *' status '*)
+    count=$(cat "$E2E_STATUS_COUNT")
+    count=$((count + 1))
+    printf '%s\n' "$count" >"$E2E_STATUS_COUNT"
+    if [[ "$count" -eq 1 ]]; then
+      printf '%s\n' '{"real_token_reserve":250,"status":"open"}'
+    else
+      printf '%s\n' '{"real_token_reserve":0,"status":"closed"}'
+    fi
+    ;;
+  *' configure '*|*' buy '*|*' sell '*|*' unlock '*|*' withdraw '*)
+    printf '%s\n' '{"status":"submitted","transaction_hash":"test"}'
+    ;;
+  *) printf '%s\n' '{"launch_salt":"0000000000000000000000000000000000000000000000000000000000000001"}' ;;
+esac
 EOF
 chmod +x "$tmp_dir/bin/cargo"
+printf '0\n' >"$tmp_dir/account-count"
+printf '0\n' >"$tmp_dir/status-count"
 : >"$log_file"
 
-if E2E_COMMAND_LOG="$log_file" E2E_RESET_COMPLETE="$tmp_dir/reset" PATH="$tmp_dir/bin:$PATH" \
+if ! E2E_COMMAND_LOG="$log_file" E2E_RESET_COMPLETE="$tmp_dir/reset" \
+  E2E_ACCOUNT_COUNT="$tmp_dir/account-count" E2E_STATUS_COUNT="$tmp_dir/status-count" \
+  GENESIS_ADMIN_ACCOUNT=admin PATH="$tmp_dir/bin:$PATH" \
   "$e2e_script" >"$tmp_dir/stdout" 2>"$tmp_dir/stderr"; then
-  fail "a walkthrough missing live-chain prerequisites must not report success"
+  fail "the managed localnet walkthrough should complete with the mocked live chain"
 fi
 
 rg -qx 'localnet reset --yes --reset-wallet' "$log_file" \
@@ -98,6 +135,7 @@ printf 'ok: managed localnet is reset and stopped\n'
 rm -f "$tmp_dir/reset"
 
 if E2E_COMMAND_LOG="$log_file" E2E_RESET_COMPLETE="$tmp_dir/reset" E2E_CURVE_DEPLOY_FAILURE=1 \
+  GENESIS_ADMIN_ACCOUNT=admin \
   PATH="$tmp_dir/bin:$PATH" "$e2e_script" >"$tmp_dir/stdout" 2>"$tmp_dir/stderr"; then
   fail "a failed curve deployment must make the walkthrough fail"
 fi

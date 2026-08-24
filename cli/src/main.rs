@@ -43,6 +43,7 @@ enum Command {
     Price(PriceArgs),
     Status(LaunchReadArgs),
     SaleInfo(LaunchReadArgs),
+    Configure(ConfigArgs),
 }
 
 #[derive(Debug, Args)]
@@ -158,6 +159,20 @@ struct PriceArgs {
     collateral: Option<u128>,
 }
 
+#[derive(Debug, Args)]
+struct ConfigArgs {
+    #[arg(long)]
+    admin: String,
+    #[arg(long, default_value_t = 0)]
+    pool_fee_bps: u16,
+    #[arg(long, default_value_t = 0)]
+    protocol_fee_bps: u16,
+    #[arg(long)]
+    treasury: String,
+    #[arg(long = "curve-program-path")]
+    curve_program_path: PathBuf,
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum UnlockPolicy {
     Immediate,
@@ -217,7 +232,38 @@ async fn main() -> Result<()> {
         Command::Sell(args) => sell(json, args).await,
         Command::Price(args) => price(json, args).await,
         Command::Status(args) | Command::SaleInfo(args) => sale_snapshot(json, args).await,
+        Command::Configure(args) => configure(json, args).await,
     }
+}
+
+async fn configure(json: bool, args: ConfigArgs) -> Result<()> {
+    let curve_program = load_program(&args.curve_program_path)?;
+    let admin = parse_account_id(&args.admin)?;
+    let treasury = parse_account_id(&args.treasury)?;
+    let invocation = launchpad_client::build_update_config_invocation(
+        curve_program.id(),
+        admin,
+        args.pool_fee_bps,
+        args.protocol_fee_bps,
+        treasury,
+    );
+    let wallet = WalletCore::from_env().context("opening the project wallet")?;
+    let transaction_hash = submit_public_invocation(&wallet, &curve_program, invocation).await?;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "status": "submitted",
+                "transaction_hash": hex::encode(transaction_hash),
+            })
+        );
+    } else {
+        println!(
+            "submitted curve configuration: tx_hash={}",
+            hex::encode(transaction_hash)
+        );
+    }
+    Ok(())
 }
 
 async fn withdraw_factory_pool(json: bool, args: FactoryLifecycleArgs) -> Result<()> {
