@@ -10,9 +10,15 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+common.workspace = true
 clap.workspace = true
 hex.workspace = true
 launchpad-client.workspace = true
+pool.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+wallet.workspace = true
 
 [lints]
 workspace = true
