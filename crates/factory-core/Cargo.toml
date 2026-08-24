@@ -1,0 +1,20 @@
+[package]
+name = "factory-core"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+associated_token_account_core.workspace = true
+borsh.workspace = true
+curve-core.workspace = true
+lee_core.workspace = true
+risc0-zkvm.workspace = true
+serde.workspace = true
+token_core.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+pool.workspace = true

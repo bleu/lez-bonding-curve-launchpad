@@ -9,7 +9,7 @@ license = "MIT OR Apache-2.0"
 # rather than promised.
 [dependencies]
 
-# `arithmetic_side_effects` is denied here and in `sale` only. Bare `+`, `*` and
+# `arithmetic_side_effects` is denied here and in `pool` only. Bare `+`, `*` and
 # `/` are impossible, so every operation is a named checked call and every
 # exception carries a written reason with the bound that makes it hold.
 [lints.clippy]
