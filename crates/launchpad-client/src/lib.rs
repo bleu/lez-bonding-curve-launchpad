@@ -596,6 +596,7 @@ mod tests {
         build_buy_with_collateral_invocation, build_claim_creator_allocation_invocation,
         build_close_factory_pool_invocation, build_create_sale_invocation, build_sell_invocation,
         build_update_config_invocation, build_withdraw_factory_proceeds_invocation, quote_buy,
+        quote_buy_with_collateral, quote_sell,
     };
 
     const FACTORY_PROGRAM_ID: [u32; 8] = [7; 8];
@@ -907,7 +908,7 @@ mod tests {
     }
 
     #[test]
-    fn buy_quote_uses_current_reserves_and_live_fee_settings() {
+    fn public_trade_quotes_use_the_same_snapshot_and_rounding_rules_as_the_pool() {
         let token_definition = AccountId::new([2; 32]);
         let collateral_definition = AccountId::new([5; 32]);
         let pool = curve_core::PoolAccount {
@@ -923,9 +924,17 @@ mod tests {
             treasury: AccountId::new([4; 32]),
         };
 
-        let quote = quote_buy(&pool, &config, 200, 1).expect("quote should succeed");
-        assert_eq!(quote.amount_in, 25);
-        assert_eq!(quote.amount_out, 200);
+        let exact_output = quote_buy(&pool, &config, 200, 1).expect("buy quote should succeed");
+        let exact_input = quote_buy_with_collateral(&pool, &config, 25, 1)
+            .expect("collateral-input buy quote should succeed");
+        let sell = quote_sell(&pool, &config, 250, 1).expect("sell quote should succeed");
+
+        assert_eq!((exact_output.amount_in, exact_output.amount_out), (25, 200));
+        assert_eq!((exact_input.amount_in, exact_input.amount_out), (25, 200));
+        assert_eq!((sell.amount_in, sell.amount_out), (250, 20));
+        assert_eq!(pool.pool.k, 100_000, "quoting must not mutate the snapshot");
+        assert_eq!(pool.pool.real_reserve0, 800);
+        assert_eq!(pool.pool.real_reserve1, 100);
     }
 
     #[test]

@@ -18,7 +18,7 @@ Before a real walkthrough, replace [`GENESIS_ADMIN`](crates/curve-core/src/lib.r
 GENESIS_ADMIN_ACCOUNT=Public/<configured-genesis-admin-account> ./verify/e2e.sh
 ```
 
-The script resets only this project's managed localnet and wallet, builds and deploys both guests, configures the curve, creates a launch, exercises rejected and successful buys plus a sell, exhausts the sale reserve, then checks auto-close, creator unlock, and withdrawal. It stops the localnet it started. It refuses to touch a foreign listener.
+The script resets only this project's managed localnet and wallet, builds and deploys both guests, configures the curve, creates a launch, exercises rejected and successful buys plus a sell, exhausts the sale reserve, then checks auto-close, creator unlock, and withdrawal. It stops the localnet it started and refuses to touch a foreign listener. It is a manual integration harness, not evidence used by this PoC review.
 
 > **Important — development proving mode.** [`scaffold.toml`](scaffold.toml) sets `risc0_dev_mode = true`. This walkthrough demonstrates deployed-program integration and state transitions on a sequencer; it does **not** measure, demonstrate, or make a production-security claim about real ZK proving.
 
@@ -42,11 +42,11 @@ Nix is not required. Scaffold needs it only for `lgs basecamp`, which is outside
 
 ### Arithmetic and reserves
 
-At creation, [`Pool::create`](crates/pool/src/lib.rs) rejects zero virtual reserves and either virtual reserve at or above `2^64`. Thus the immutable creation-time `k = V0 × V1` is strictly below `2^128` and fits `u128`. That initial bound is not an assumption about future state: every current and proposed virtual-reserve product, plus all reserve, fee, and quote arithmetic, is checked. A trade that would overflow or leave its real output reserve rejects before state mutation. The complete argument is in [ADR 0004](docs/adr/0004-u128-bounds-for-the-curve-arithmetic.md).
+At creation, [`Pool::create`](crates/pool/src/lib.rs) rejects zero virtual reserves and either virtual reserve at or above `2^64`. Thus the immutable creation-time `k = V0 × V1` is strictly below `2^128` and fits `u128`. Trades use that stored `k` for every quote, while reserve additions/subtractions and all quote arithmetic remain checked. A trade that would overflow or leave its real output reserve rejects before state mutation. The complete argument is in [ADR 0004](docs/adr/0004-u128-bounds-for-the-curve-arithmetic.md).
 
-Quotes use the **current** virtual-reserve product, while stored `k` remains the immutable lower bound. Exact-input output uses ceiling division internally so the payout rounds down; exact-output pricing rounds required input up. The combined input fee rounds up, is split deterministically, and the retained pool portion stays in the matching real and virtual reserve; the protocol portion is sent to the configured treasury ATA. These directions favour the pool, and each successful trade preserves `current_product >= k`. See [`curve-math`](crates/curve-math/src/lib.rs), [`pool`](crates/pool/src/lib.rs), and [ADR 0005](docs/adr/0005-dual-input-fees-and-monotonic-reserve-product.md).
+Quotes use the immutable creation-time `k`, as RFP-015 specifies. Exact-input output uses ceiling division internally so the payout rounds down; exact-output pricing rounds required input up. The combined input fee rounds up, is split deterministically, and the retained pool portion stays in the matching real and virtual reserve; the protocol portion is sent to the configured treasury ATA. See [`curve-math`](crates/curve-math/src/lib.rs), [`pool`](crates/pool/src/lib.rs), and [ADR 0005](docs/adr/0005-dual-input-fees-and-monotonic-reserve-product.md).
 
-The executable property suite in [`crates/pool/tests/proptest_invariants.rs`](crates/pool/tests/proptest_invariants.rs) generates 512 randomized sequences of up to 128 exact-input/exact-output swaps, close attempts, and withdrawals across both token directions, boundary amounts, and valid/invalid fee combinations. It asserts successful swaps conserve the modeled real reserves, never pay beyond the selected real output reserve, keep the virtual product non-decreasing and at least `k`, and retain immutable `k`; rejected actions leave state unchanged. It is a pure state-machine test—not a proof of LEZ account/ATA wiring, concurrent sequencer execution, private-flow behavior, or a mathematical proof over all inputs. Adapter tests in [`curve-core`](crates/curve-core/src/tests.rs) cover the account, authorization, and custody boundary.
+The executable property suite in [`crates/pool/tests/proptest_invariants.rs`](crates/pool/tests/proptest_invariants.rs) generates 512 randomized sequences of up to 128 exact-input/exact-output swaps, close attempts, and withdrawals across both token directions, boundary amounts, and valid/invalid fee combinations. It asserts successful swaps conserve the modeled real reserves, never pay beyond the selected real output reserve, and retain the immutable pricing `k`; rejected actions leave state unchanged. It is a pure state-machine test—not a proof of LEZ account/ATA wiring, concurrent sequencer execution, private-flow behavior, or a mathematical proof over all inputs. Adapter tests in [`curve-core`](crates/curve-core/src/tests.rs) cover the account, authorization, and custody boundary.
 
 ### What “sold back never exceeds bought” means here
 
@@ -56,30 +56,35 @@ The factory provides the launch-level boundary. [`create_factory_pool`](crates/f
 
 ## Requirement mapping
 
-Status is evidence-aware: **implemented and demonstrated** means the canonical localnet walkthrough exercises deployed programs; **implemented but not demonstrated** means code and focused tests exist but that exact behavior is not a walkthrough checkpoint; **seam/future integration** identifies a deliberate extension point; **not covered** is outside this PoC.
+Status is evidence-aware and deliberately excludes mini-app and live-deployment
+evidence for this PoC review. **implemented and test-covered** means focused unit,
+property, adapter, or mocked-harness tests exercise the behavior; **implemented but
+not test-covered** means code exists without a focused check; **seam/future
+integration** identifies a deliberate extension point; **not covered** is outside
+this PoC or explicitly deferred.
 
 | RFP-015 requirement | Implementation location | Verification evidence | Status |
 | --- | --- | --- | --- |
-| F1: deterministic two-way curve, integer pricing, reserve backing, inverse quote | `crates/curve-math`, `crates/pool`, `crates/launchpad-client` | math/unit/property tests; `verify/e2e.sh` exercises both collateral-input and exact-output buys plus a sell on a deployed launch | **implemented and demonstrated** |
-| F2: creator-defined `D`, optional `R`, virtual reserves, distinct allocations | `crates/factory-core`, factory `CreateFactoryPool` | factory tests cover fixed supply and reject `Vt <= D`; walkthrough creates `D=1000`, `R=100` and inspects terminal reserve | **implemented and demonstrated** |
-| F3: public and deshield→trade→re-shield participation | public CLI/client in `launchpad-client`; privacy boundary in [ADR 0005](docs/adr/0005-private-trade-boundary-and-verification.md) | walkthrough exercises public trades only | **not covered** for the private path |
-| F4: automatic close when sale reserve exhausts | factory token0 depletion policy; `Pool::close_if_depleted` | walkthrough buys the remaining reserve and asserts `closed` | **implemented and demonstrated** |
-| F5: post-close collateral and `R` settlement | `WithdrawFactoryProceeds` in `factory-core` | walkthrough unlocks and withdraws after close | **implemented and demonstrated** |
-| F6: buy/sell slippage protection | exact-output/input pool operations and CLI caps/floors | unit tests; walkthrough checks rejected buy slippage | **implemented but not demonstrated** for sell-floor rejection |
-| F7: ATA custody | `curve-core` create/swap/lifecycle adapters | adapter tests and deployed walkthrough invoke ATA transfers | **implemented and demonstrated** |
-| U01: SDK lifecycle for public and private users | `launchpad-client` | public invocation/quote tests and walkthrough | **implemented but not demonstrated** for broad discovery/position UX; private lifecycle is **not covered** |
+| F1: deterministic two-way curve, integer pricing, reserve backing, inverse quote | `crates/curve-math`, `crates/pool`, `crates/launchpad-client` | math, unit, quote, and 512-case state-machine property tests | **implemented and test-covered**, except collateral-only fee semantics |
+| F2: creator-defined `D`, optional `R`, virtual reserves, distinct allocations | `crates/factory-core`, factory `CreateFactoryPool` | factory tests cover fixed supply and reject `Vt <= D` | **implemented and test-covered** |
+| F3: public and deshield→trade→re-shield participation | public CLI/client in `launchpad-client`; privacy boundary in [ADR 0005](docs/adr/0005-private-trade-boundary-and-verification.md) | public invocation tests; private entry point fail-closes before any funding | **not covered** for the required private path |
+| F4: automatic close when sale reserve exhausts | factory token0 depletion policy; `Pool::close_if_depleted` | pool/factory lifecycle tests | **implemented and test-covered** |
+| F5: post-close collateral and `R` settlement | `WithdrawFactoryProceeds` in `factory-core` | factory chained-call tests | **implemented and test-covered** |
+| F6: buy/sell slippage protection | exact-output/input pool operations and CLI caps/floors | unit, client, and CLI parsing tests | **implemented and test-covered** |
+| F7: ATA custody | `curve-core` create/swap/lifecycle adapters | adapter tests verify ATA derivation and settlement accounts | **implemented and test-covered** |
+| U01: SDK lifecycle for public and private users | `launchpad-client` | public invocation/quote tests; private lifecycle fail-closes | **implemented and test-covered** for public operations; private lifecycle is **not covered** |
 | U02, U04–U08: mini-app, confirmation, privacy UX, analytics | — | — | **not covered** |
-| U03: essential creator/participant CLI | `cli/src/main.rs` | CLI parsing tests and walkthrough (`configure`, `create-sale`, `price`, `buy`, `buy-with-collateral`, `sell`, `status`, `unlock`, `withdraw`); status reports configured sale quantity, tokens sold, and live reserves | **implemented and demonstrated** |
+| U03: essential creator/participant CLI | `cli/src/main.rs` | CLI parsing tests for `configure`, `create-sale`, `price`, `buy`, `buy-with-collateral`, `sell`, `status`, `unlock`, and `withdraw`; status reports configured sale quantity, tokens sold, and reserves | **implemented and test-covered** |
 | U09: SPEL-generated IDL | — | — | **not covered**; this raw LEZ template deliberately has no framework IDL ([ADR 0002](docs/adr/0002-repo-layout-and-guest-shim.md)) |
-| U10: actionable rejected-buy errors | CLI JSON error categories and pool errors | walkthrough checks slippage and reserve-overshoot error categories | **implemented and demonstrated** |
-| R1–R2: concurrent-safe invariant/accounting and atomic failed buy | checked state transitions; curve account adapters | property suite checks rejected transition atomicity; adapter tests; walkthrough rejection checkpoints | **implemented but not demonstrated** for adversarial concurrent submissions |
-| R3: atomic auto-close, no later buy | factory closure policy | walkthrough exhausts reserve and asserts closure | **implemented and demonstrated** |
-| P1–P2: one-transaction buy/close | chained-call adapters | deployed walkthrough submits individual lifecycle operations | **implemented and demonstrated** as integration behavior, not performance measurement |
+| U10: actionable rejected-buy errors | CLI JSON error categories and pool errors | CLI and pool error tests | **implemented and test-covered** |
+| R1–R2: concurrent-safe invariant/accounting and atomic failed buy | checked state transitions; curve account adapters | property suite checks rejected transition atomicity; adapter tests | **implemented and test-covered** at the state-machine boundary, not under adversarial concurrent submissions |
+| R3: atomic auto-close, no later buy | factory closure policy | pool/factory lifecycle tests | **implemented and test-covered** |
+| P1–P2: one-transaction buy/close | chained-call adapters | adapter/factory tests inspect chained calls | **implemented and test-covered** as construction behavior, not performance measurement |
 | P3: documented CU costs and testnet version | — | — | **not covered** |
 | S1, S6, S7: testnet/mainnet deployments and milestone plan | — | — | **not covered**; this is a one-week PoC |
 | S2: sequencer E2E in CI | `verify/e2e.sh`, `verify/tests/e2e.sh` | mocked control-flow test exists; current CI runs unit tests and pin checks, not a live sequencer | **implemented but not demonstrated** in CI |
 | S3: test per hard requirement | tests across crates and `verify/` | mapping above identifies unimplemented/private/UI/performance gaps | **not covered** as a complete RFP claim |
-| S4: README deployment and end-to-end use | this README and `verify/e2e.sh` | canonical command above | **implemented and demonstrated** for CLI/localnet; no mini-app |
+| S4: README deployment and end-to-end use | this README and `verify/e2e.sh` | canonical command and mocked harness control-flow test | **implemented and test-covered**; live execution excluded from this review |
 | S5 and Privacy requirements: full private-flow guarantees and privacy document | [ADR 0005](docs/adr/0005-private-trade-boundary-and-verification.md) | documents the boundary and acceptance criteria only | **not covered** |
 
 ### Platform-dependency evidence
