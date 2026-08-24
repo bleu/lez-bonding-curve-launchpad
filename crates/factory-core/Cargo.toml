@@ -10,12 +10,10 @@ borsh.workspace = true
 clock_core.workspace = true
 curve-core.workspace = true
 lee_core.workspace = true
+pool.workspace = true
 risc0-zkvm.workspace = true
 serde.workspace = true
 token_core.workspace = true
 
 [lints]
 workspace = true
-
-[dev-dependencies]
-pool.workspace = true

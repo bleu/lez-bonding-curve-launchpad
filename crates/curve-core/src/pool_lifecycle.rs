@@ -17,6 +17,7 @@ pub struct WithdrawnReserves {
 pub fn close_pool(
     pool: AccountWithMetadata,
     owner: AccountWithMetadata,
+    clock: AccountWithMetadata,
     curve_program_id: ProgramId,
 ) -> Vec<AccountPostState> {
     assert!(owner.is_authorized, "Owner authorization is missing");
@@ -37,10 +38,23 @@ pub fn close_pool(
         "Pool account ID does not match PDA"
     );
 
-    pool_account.pool.close_pool();
+    let now = trusted_time(clock);
+    pool_account
+        .pool
+        .close_pool(now)
+        .expect("Pool is already closed");
     let mut post = pool.account;
     post.data = (&pool_account).into();
     vec![AccountPostState::new(post)]
+}
+
+fn trusted_time(clock: AccountWithMetadata) -> u64 {
+    assert_eq!(
+        clock.account_id,
+        clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID,
+        "Clock account is not the trusted LEZ clock"
+    );
+    clock_core::ClockAccountData::from_bytes(clock.account.data.as_ref()).timestamp
 }
 
 /// Retires the pool and returns the exact amounts the token adapter must transfer.
@@ -49,7 +63,7 @@ pub fn close_pool(
 pub fn withdraw_reserves(
     pool: AccountWithMetadata,
     owner: AccountWithMetadata,
-    clock: Option<AccountWithMetadata>,
+    clock: AccountWithMetadata,
     curve_program_id: ProgramId,
 ) -> (Vec<AccountPostState>, WithdrawnReserves) {
     assert!(owner.is_authorized, "Owner authorization is missing");
@@ -70,23 +84,7 @@ pub fn withdraw_reserves(
         "Pool account ID does not match PDA"
     );
 
-    let now = match clock {
-        Some(clock) => {
-            assert_eq!(
-                clock.account_id,
-                clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID,
-                "Clock account is not the trusted LEZ clock"
-            );
-            clock_core::ClockAccountData::from_bytes(clock.account.data.as_ref()).timestamp
-        }
-        None => {
-            assert!(
-                !pool_account.pool.open || pool_account.pool.close_timestamp.is_none(),
-                "Trusted LEZ clock is required to evaluate pool expiry"
-            );
-            0
-        }
-    };
+    let now = trusted_time(clock);
     let (token0_amount, token1_amount) = pool_account
         .pool
         .withdraw_reserves(now)

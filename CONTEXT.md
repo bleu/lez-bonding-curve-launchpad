@@ -36,10 +36,10 @@ Launch-facing SDKs may say purchase, redemption, token-for-sale, collateral, cre
 - `crates/curve-math` — direction-neutral pricing arithmetic as pure checked integer functions. Empty dependency list.
 - `crates/pool` — ordered pool state machine. Applies dual-fee exact-input/output swaps, expiry, close, and full withdrawal. Its randomized solvency suite needs no account fixtures.
 - `crates/curve-core` — where `lee_core` enters. Owns the neutral wire enum, Borsh account state, owner-scoped pool PDA, ATA validation and custody calls, authorization, and adapter handlers.
-- `crates/factory-core` — launch adapter. Mints fixed supply, owns launch allocation and DEX-seed policy, stores creator commitments and unlock policy, and tail-calls the curve's neutral pool interface.
+- `crates/factory-core` — launch adapter. Mints fixed supply, owns launch allocation and DEX-seed policy, stores creator commitments and post-close claiming, and tail-calls the curve's neutral pool interface.
 - `crates/launchpad-client` — the SDK boundary. Pool lifecycle operations are neutral; factory adapters may expose launch terminology.
 - `cli/` — the `launchpad` binary. Parses arguments and calls `launchpad-client`.
 - `methods/guest/src/bin/*.rs` — one risc0 guest per file, each a dispatch shim over its matching core crate. Excluded from the root workspace so the guest keeps its own release profile and program identity.
 - `verify/` — reviewer-facing verification.
 
-The factory owns creator commitments, launch allocation, unlock policy, and DEX-seed accounting; the pool must not grow those fields.
+The factory owns creator commitments, launch allocation, post-close creator claims, and DEX-seed accounting; the pool must not grow those fields.

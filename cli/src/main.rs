@@ -8,12 +8,12 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use clap::{Args, Parser, Subcommand, ValueEnum, builder::Styles};
+use clap::{Args, Parser, Subcommand, builder::Styles};
 use launchpad_client::{
-    BuyRequest, CreateSaleRequest, SellRequest, UnlockPolicy as FactoryUnlockPolicy,
-    build_buy_invocation, build_close_factory_pool_invocation, build_create_sale_invocation,
-    build_sell_invocation, build_unlock_creator_allocation_invocation,
-    build_withdraw_factory_pool_invocation, load_curve_config, load_factory_pool,
+    BuyRequest, CreateSaleRequest, SellRequest, build_buy_invocation,
+    build_claim_creator_allocation_invocation, build_close_factory_pool_invocation,
+    build_create_sale_invocation, build_sell_invocation,
+    build_withdraw_factory_proceeds_invocation, load_curve_config, load_factory_pool,
     load_factory_state, load_program, parse_account_id, quote_buy, quote_buy_with_collateral,
     quote_sell, submit_public_invocation,
 };
@@ -75,7 +75,7 @@ enum Command {
     CreateSale(CreateSaleArgs),
     Close(FactoryLifecycleArgs),
     Withdraw(FactoryLifecycleArgs),
-    Unlock(FactoryLifecycleArgs),
+    Claim(FactoryLifecycleArgs),
     Buy(BuyArgs),
     Sell(SellArgs),
     Price(PriceArgs),
@@ -102,8 +102,8 @@ struct CreateSaleArgs {
     virtual_token_reserve: u128,
     #[arg(long = "virtual-collateral-reserve", alias = "vc")]
     virtual_collateral_reserve: u128,
-    #[arg(long, value_enum, default_value_t = UnlockPolicy::Immediate)]
-    unlock_policy: UnlockPolicy,
+    #[arg(long = "end-timestamp")]
+    end_timestamp: Option<u64>,
     #[arg(long = "collateral-definition")]
     collateral_definition: String,
     /// Public account that authorizes the factory launch.
@@ -211,12 +211,6 @@ struct ConfigArgs {
     curve_program_path: PathBuf,
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum UnlockPolicy {
-    Immediate,
-    OnClose,
-}
-
 fn parse_launch_salt(raw: &str) -> Result<[u8; 32], String> {
     let bytes = hex::decode(raw).map_err(|_| "launch salt must be hexadecimal".to_owned())?;
     bytes
@@ -239,8 +233,7 @@ struct SaleSnapshot {
     token_definition: String,
     collateral_definition: String,
     status: &'static str,
-    creator_unlocked: bool,
-    unlock_policy: String,
+    creator_allocation_claimed: bool,
     real_token_reserve: u128,
     real_collateral_reserve: u128,
     virtual_token_reserve: u128,
@@ -284,8 +277,8 @@ async fn run(json: bool, cli: Cli) -> Result<()> {
     match cli.command {
         Command::CreateSale(args) => create_sale(json, args).await,
         Command::Close(args) => close_factory_pool(json, args).await,
-        Command::Withdraw(args) => withdraw_factory_pool(json, args).await,
-        Command::Unlock(args) => unlock_creator_allocation(json, args).await,
+        Command::Withdraw(args) => withdraw_factory_proceeds(json, args).await,
+        Command::Claim(args) => claim_creator_allocation(json, args).await,
         Command::Buy(args) => buy(json, args).await,
         Command::Sell(args) => sell(json, args).await,
         Command::Price(args) => price(json, args).await,
@@ -345,12 +338,12 @@ async fn configure(json: bool, args: ConfigArgs) -> Result<()> {
     Ok(())
 }
 
-async fn withdraw_factory_pool(json: bool, args: FactoryLifecycleArgs) -> Result<()> {
+async fn withdraw_factory_proceeds(json: bool, args: FactoryLifecycleArgs) -> Result<()> {
     let factory_program = load_program(&args.factory_program_path)?;
     let curve_program = load_program(&args.curve_program_path)?;
     let creator = parse_account_id(&args.creator)?;
     let collateral_definition = parse_account_id(&args.collateral_definition)?;
-    let invocation = build_withdraw_factory_pool_invocation(
+    let invocation = build_withdraw_factory_proceeds_invocation(
         factory_program.id(),
         curve_program.id(),
         creator,
@@ -426,12 +419,10 @@ async fn sale_snapshot(json: bool, args: LaunchReadArgs) -> Result<()> {
         collateral_definition,
     )
     .await?;
-    let status = if pool.pool.retired {
-        "retired"
-    } else if pool.pool.open {
-        "open"
-    } else {
-        "closed"
+    let status = match pool.pool.lifecycle {
+        pool::PoolLifecycle::Open => "open",
+        pool::PoolLifecycle::Closed => "closed",
+        pool::PoolLifecycle::Withdrawn => "withdrawn",
     };
     let snapshot = SaleSnapshot {
         launch_salt: hex::encode(args.launch.launch_salt),
@@ -444,8 +435,7 @@ async fn sale_snapshot(json: bool, args: LaunchReadArgs) -> Result<()> {
         token_definition: factory.token_definition_id.to_string(),
         collateral_definition: factory.collateral_definition_id.to_string(),
         status,
-        creator_unlocked: factory.creator_unlocked,
-        unlock_policy: format!("{:?}", factory.unlock_policy).to_lowercase(),
+        creator_allocation_claimed: factory.creator_allocation_claimed,
         real_token_reserve: pool.pool.real_reserve0,
         real_collateral_reserve: pool.pool.real_reserve1,
         virtual_token_reserve: pool.pool.virtual_reserve0,
@@ -609,12 +599,12 @@ async fn close_factory_pool(json: bool, args: FactoryLifecycleArgs) -> Result<()
     Ok(())
 }
 
-async fn unlock_creator_allocation(json: bool, args: FactoryLifecycleArgs) -> Result<()> {
+async fn claim_creator_allocation(json: bool, args: FactoryLifecycleArgs) -> Result<()> {
     let factory_program = load_program(&args.factory_program_path)?;
     let curve_program = load_program(&args.curve_program_path)?;
     let creator = parse_account_id(&args.creator)?;
     let collateral_definition = parse_account_id(&args.collateral_definition)?;
-    let invocation = build_unlock_creator_allocation_invocation(
+    let invocation = build_claim_creator_allocation_invocation(
         factory_program.id(),
         curve_program.id(),
         creator,
@@ -632,7 +622,7 @@ async fn unlock_creator_allocation(json: bool, args: FactoryLifecycleArgs) -> Re
         println!("{}", serde_json::to_string(&output)?);
     } else {
         println!(
-            "submitted creator allocation unlock: tx_hash={} launch_salt={}",
+            "submitted creator allocation claim: tx_hash={} launch_salt={}",
             output.transaction_hash, output.launch_salt
         );
     }
@@ -657,7 +647,7 @@ async fn create_sale(json: bool, args: CreateSaleArgs) -> Result<()> {
             creator_allocation: args.creator_allocation,
             virtual_token_reserve: args.virtual_token_reserve,
             virtual_collateral_reserve: args.virtual_collateral_reserve,
-            unlock_policy: args.unlock_policy.into(),
+            end_timestamp: args.end_timestamp,
             collateral_definition,
         },
     )?;
@@ -679,15 +669,6 @@ async fn create_sale(json: bool, args: CreateSaleArgs) -> Result<()> {
     Ok(())
 }
 
-impl From<UnlockPolicy> for FactoryUnlockPolicy {
-    fn from(value: UnlockPolicy) -> Self {
-        match value {
-            UnlockPolicy::Immediate => Self::Immediate,
-            UnlockPolicy::OnClose => Self::OnClose,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -700,7 +681,7 @@ mod tests {
             "create-sale",
             "close",
             "withdraw",
-            "unlock",
+            "claim",
             "buy",
             "sell",
             "price",

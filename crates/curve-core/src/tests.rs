@@ -206,11 +206,13 @@ fn create_pool_with_accounts(
         accounts.owner_token1_ata,
         accounts.pool_token0_ata,
         accounts.pool_token1_ata,
+        trusted_clock(1),
         token0_amount,
         token1_amount,
         virtual_reserve0,
         virtual_reserve1,
         Some(42),
+        None,
         owner_id,
         CURVE_PROGRAM_ID,
     );
@@ -276,6 +278,60 @@ fn create_pool_enforces_pool_parameter_validation() {
     create_pool_with_accounts(valid_create_pool_accounts(), 800, 25, 0, 100);
 }
 
+#[should_panic(expected = "Close timestamp must be in the future")]
+#[test]
+fn create_pool_rejects_an_end_timestamp_at_the_trusted_time_boundary() {
+    let accounts = valid_create_pool_accounts();
+    let owner_id = accounts.owner.account_id;
+    let _ = create_pool(
+        accounts.pool,
+        accounts.owner,
+        accounts.token0_definition,
+        accounts.token1_definition,
+        accounts.owner_token0_ata,
+        accounts.owner_token1_ata,
+        accounts.pool_token0_ata,
+        accounts.pool_token1_ata,
+        trusted_clock(42),
+        800,
+        25,
+        1_000,
+        100,
+        Some(42),
+        None,
+        owner_id,
+        CURVE_PROGRAM_ID,
+    );
+}
+
+#[should_panic(expected = "Clock account is not the trusted LEZ clock")]
+#[test]
+fn create_pool_rejects_a_substituted_clock_even_without_an_end_timestamp() {
+    let accounts = valid_create_pool_accounts();
+    let owner_id = accounts.owner.account_id;
+    let mut fake_clock = trusted_clock(1);
+    fake_clock.account_id = AccountId::new([99; 32]);
+    let _ = create_pool(
+        accounts.pool,
+        accounts.owner,
+        accounts.token0_definition,
+        accounts.token1_definition,
+        accounts.owner_token0_ata,
+        accounts.owner_token1_ata,
+        accounts.pool_token0_ata,
+        accounts.pool_token1_ata,
+        fake_clock,
+        800,
+        25,
+        1_000,
+        100,
+        None,
+        None,
+        owner_id,
+        CURVE_PROGRAM_ID,
+    );
+}
+
 #[test]
 fn owner_can_open_a_pool_and_atomically_fund_both_ata_reserves() {
     let accounts = valid_create_pool_accounts();
@@ -293,11 +349,13 @@ fn owner_can_open_a_pool_and_atomically_fund_both_ata_reserves() {
         accounts.owner_token1_ata,
         accounts.pool_token0_ata,
         accounts.pool_token1_ata,
+        trusted_clock(1),
         800,
         25,
         1_000,
         100,
         Some(42),
+        None,
         owner_id,
         CURVE_PROGRAM_ID,
     );
@@ -372,10 +430,12 @@ fn zero_initial_reserve_creates_its_ata_without_emitting_a_zero_transfer() {
         accounts.owner_token1_ata,
         accounts.pool_token0_ata,
         accounts.pool_token1_ata,
+        trusted_clock(1),
         800,
         0,
         1_000,
         100,
+        None,
         None,
         owner_id,
         CURVE_PROGRAM_ID,
@@ -590,7 +650,7 @@ fn pool_state_round_trips_with_ordered_tokens_owner_and_optional_expiry() {
         token0_definition_id: AccountId::new([1; 32]),
         token1_definition_id: AccountId::new([2; 32]),
         owner: AccountId::new([3; 32]),
-        pool: Pool::create(800, 25, 1000, 100, Some(42)).expect("valid pool"),
+        pool: Pool::create(800, 25, 1000, 100, Some(42), None).expect("valid pool"),
     };
     let data = Data::from(&pool_account);
     assert_eq!(
@@ -608,7 +668,7 @@ fn stored_pool_owner_can_close_the_pool() {
         token0_definition_id: token0,
         token1_definition_id: token1,
         owner,
-        pool: Pool::create(800, 25, 1000, 100, None).expect("valid pool"),
+        pool: Pool::create(800, 25, 1000, 100, None, None).expect("valid pool"),
     };
     let pool = AccountWithMetadata {
         account: Account {
@@ -620,11 +680,11 @@ fn stored_pool_owner_can_close_the_pool() {
         account_id: compute_pool_pda(CURVE_PROGRAM_ID, token0, token1, owner),
     };
 
-    let [post]: [_; 1] = close_pool(pool, signer(owner), CURVE_PROGRAM_ID)
+    let [post]: [_; 1] = close_pool(pool, signer(owner), trusted_clock(1), CURVE_PROGRAM_ID)
         .try_into()
         .expect("one post state");
     let closed = PoolAccount::try_from(&post.account().data).expect("valid pool state");
-    assert!(!closed.pool.open);
+    assert_eq!(closed.pool.lifecycle, pool::PoolLifecycle::Closed);
 }
 
 #[should_panic(expected = "Authority is not the pool owner")]
@@ -637,7 +697,7 @@ fn an_unrelated_signer_cannot_close_the_pool() {
         token0_definition_id: token0,
         token1_definition_id: token1,
         owner,
-        pool: Pool::create(800, 25, 1000, 100, None).expect("valid pool"),
+        pool: Pool::create(800, 25, 1000, 100, None, None).expect("valid pool"),
     };
     let pool = AccountWithMetadata {
         account: Account {
@@ -648,7 +708,7 @@ fn an_unrelated_signer_cannot_close_the_pool() {
         is_authorized: false,
         account_id: compute_pool_pda(CURVE_PROGRAM_ID, token0, token1, owner),
     };
-    let _ = close_pool(pool, intruder_signer(), CURVE_PROGRAM_ID);
+    let _ = close_pool(pool, intruder_signer(), trusted_clock(1), CURVE_PROGRAM_ID);
 }
 
 #[test]
@@ -660,7 +720,7 @@ fn expired_pool_owner_can_withdraw_both_reserves_without_closing_first() {
         token0_definition_id: token0,
         token1_definition_id: token1,
         owner,
-        pool: Pool::create(800, 25, 1000, 100, Some(42)).expect("valid pool"),
+        pool: Pool::create(800, 25, 1000, 100, Some(42), None).expect("valid pool"),
     };
     let pool = AccountWithMetadata {
         account: Account {
@@ -687,14 +747,14 @@ fn expired_pool_owner_can_withdraw_both_reserves_without_closing_first() {
         account_id: clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID,
     };
 
-    let (posts, withdrawn) = withdraw_reserves(pool, signer(owner), Some(clock), CURVE_PROGRAM_ID);
+    let (posts, withdrawn) = withdraw_reserves(pool, signer(owner), clock, CURVE_PROGRAM_ID);
     assert_eq!(
         (withdrawn.token0_amount, withdrawn.token1_amount),
         (800, 25)
     );
     let [post]: [_; 1] = posts.try_into().expect("one post state");
     let retired = PoolAccount::try_from(&post.account().data).expect("valid pool state");
-    assert!(retired.pool.retired);
+    assert_eq!(retired.pool.lifecycle, pool::PoolLifecycle::Withdrawn);
 }
 
 #[test]
@@ -710,7 +770,7 @@ fn withdraw_dispatch_transfers_both_real_reserves_and_retires_the_pool() {
                 token0_definition_id: token0,
                 token1_definition_id: token1,
                 owner,
-                pool: Pool::create(800, 100, 1000, 100, Some(42)).expect("valid pool"),
+                pool: Pool::create(800, 100, 1000, 100, Some(42), None).expect("valid pool"),
             }),
             ..Account::default()
         },
@@ -726,10 +786,10 @@ fn withdraw_dispatch_transfers_both_real_reserves_and_retires_the_pool() {
         vec![
             pool,
             signer(owner),
-            pool_token0.clone(),
-            pool_token1.clone(),
             owner_token0.clone(),
             owner_token1.clone(),
+            pool_token0.clone(),
+            pool_token1.clone(),
             trusted_clock(42),
         ],
         Instruction::WithdrawReserves,
@@ -740,7 +800,7 @@ fn withdraw_dispatch_transfers_both_real_reserves_and_retires_the_pool() {
         .try_into()
         .expect("only the pool state changes directly");
     let retired = PoolAccount::try_from(&post.account().data).expect("valid pool state");
-    assert!(retired.pool.retired);
+    assert_eq!(retired.pool.lifecycle, pool::PoolLifecycle::Withdrawn);
     assert_eq!(
         (retired.pool.real_reserve0, retired.pool.real_reserve1),
         (0, 0)
@@ -790,7 +850,7 @@ fn exact_input_handler_selects_direction_and_pairs_the_fee_with_token_in() {
         token0_definition_id: token0,
         token1_definition_id: token1,
         owner,
-        pool: Pool::create(800, 100, 1000, 100, None).expect("valid pool"),
+        pool: Pool::create(800, 100, 1000, 100, None, None).expect("valid pool"),
     };
     let pool = AccountWithMetadata {
         account: Account {
@@ -839,7 +899,7 @@ fn token0_to_token1_exact_input_settles_all_three_transfers() {
                 token0_definition_id: token0,
                 token1_definition_id: token1,
                 owner,
-                pool: Pool::create(800, 100, 1000, 100, Some(42)).expect("valid pool"),
+                pool: Pool::create(800, 100, 1000, 100, Some(42), None).expect("valid pool"),
             }),
             ..Account::default()
         },
@@ -943,7 +1003,7 @@ fn exact_output_handler_caps_fee_inclusive_input_in_the_reverse_direction() {
         token0_definition_id: token0,
         token1_definition_id: token1,
         owner,
-        pool: Pool::create(800, 100, 1000, 100, None).expect("valid pool"),
+        pool: Pool::create(800, 100, 1000, 100, None, None).expect("valid pool"),
     };
     let pool = AccountWithMetadata {
         account: Account {
@@ -997,7 +1057,7 @@ fn exact_output_dispatch_settles_fee_inclusive_input_and_requested_output_atomic
                 token0_definition_id: token0,
                 token1_definition_id: token1,
                 owner,
-                pool: Pool::create(800, 100, 1000, 100, Some(42)).expect("valid pool"),
+                pool: Pool::create(800, 100, 1000, 100, Some(42), None).expect("valid pool"),
             }),
             ..Account::default()
         },
@@ -1099,6 +1159,7 @@ fn every_instruction_survives_the_guest_wire_format() {
             virtual_reserve0: 1000,
             virtual_reserve1: 100,
             close_timestamp: Some(42),
+            close_on_depletion: None,
             owner: AccountId::new([3; 32]),
             curve_program_id: [7; 8],
         },

@@ -16,6 +16,8 @@ pub enum CreateError {
     VirtualReserveAboveBound,
     /// Zero virtual reserves make `k` zero and cannot price a swap.
     VirtualReserveZero,
+    /// A configured depletion side must begin with a positive real reserve.
+    DepletionReserveZero,
 }
 
 // Hand-written: the dependency rules keep `thiserror` out of this crate.
@@ -30,6 +32,12 @@ impl std::fmt::Display for CreateError {
             }
             Self::VirtualReserveZero => {
                 write!(f, "virtual reserves must be non-zero")
+            }
+            Self::DepletionReserveZero => {
+                write!(
+                    f,
+                    "the configured depletion-side real reserve must be non-zero"
+                )
             }
         }
     }
@@ -50,14 +58,22 @@ pub struct Pool {
     pub real_reserve0: u128,
     pub real_reserve1: u128,
     pub close_timestamp: Option<u64>,
-    pub open: bool,
-    pub retired: bool,
+    pub close_on_depletion: Option<TokenSide>,
+    pub lifecycle: PoolLifecycle,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub enum TokenSide {
     Token0,
     Token1,
+}
+
+/// The persisted lifecycle. Timestamp expiry is evaluated by [`Pool::effective_lifecycle`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub enum PoolLifecycle {
+    Open,
+    Closed,
+    Withdrawn,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,7 +103,12 @@ pub enum SwapError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WithdrawError {
     StillOpen,
-    Retired,
+    AlreadyWithdrawn,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseError {
+    AlreadyClosed,
 }
 
 impl Pool {
@@ -98,12 +119,18 @@ impl Pool {
         virtual_reserve0: u128,
         virtual_reserve1: u128,
         close_timestamp: Option<u64>,
+        close_on_depletion: Option<TokenSide>,
     ) -> Result<Self, CreateError> {
         if virtual_reserve0 >= VIRTUAL_RESERVE_BOUND || virtual_reserve1 >= VIRTUAL_RESERVE_BOUND {
             return Err(CreateError::VirtualReserveAboveBound);
         }
         if virtual_reserve0 == 0 || virtual_reserve1 == 0 {
             return Err(CreateError::VirtualReserveZero);
+        }
+        if matches!(close_on_depletion, Some(TokenSide::Token0)) && token0_amount == 0
+            || matches!(close_on_depletion, Some(TokenSide::Token1)) && token1_amount == 0
+        {
+            return Err(CreateError::DepletionReserveZero);
         }
         let k = virtual_reserve0
             .checked_mul(virtual_reserve1)
@@ -115,8 +142,8 @@ impl Pool {
             real_reserve0: token0_amount,
             real_reserve1: token1_amount,
             close_timestamp,
-            open: true,
-            retired: false,
+            close_on_depletion,
+            lifecycle: PoolLifecycle::Open,
         })
     }
 
@@ -175,6 +202,7 @@ impl Pool {
                 .checked_sub(amount_out)
                 .ok_or(SwapError::Arithmetic)?,
         );
+        self.close_if_depleted();
         Ok(SwapOutcome {
             amount_in,
             effective_amount_in: effective_input,
@@ -252,6 +280,7 @@ impl Pool {
                 .checked_sub(amount_out)
                 .ok_or(SwapError::Arithmetic)?,
         );
+        self.close_if_depleted();
         Ok(SwapOutcome {
             amount_in,
             effective_amount_in: effective_input,
@@ -261,33 +290,56 @@ impl Pool {
         })
     }
 
-    pub fn close_pool(&mut self) {
-        if !self.retired {
-            self.open = false;
+    pub fn close_pool(&mut self, now: u64) -> Result<(), CloseError> {
+        if self.effective_lifecycle(now) != PoolLifecycle::Open {
+            return Err(CloseError::AlreadyClosed);
         }
+        self.lifecycle = PoolLifecycle::Closed;
+        Ok(())
     }
 
     pub fn withdraw_reserves(&mut self, now: u64) -> Result<(u128, u128), WithdrawError> {
-        if self.retired {
-            return Err(WithdrawError::Retired);
+        if self.lifecycle == PoolLifecycle::Withdrawn {
+            return Err(WithdrawError::AlreadyWithdrawn);
         }
-        let expired = self.close_timestamp.is_some_and(|close| now >= close);
-        if self.open && !expired {
+        if self.effective_lifecycle(now) == PoolLifecycle::Open {
             return Err(WithdrawError::StillOpen);
         }
         let reserves = (self.real_reserve0, self.real_reserve1);
         self.real_reserve0 = 0;
         self.real_reserve1 = 0;
-        self.open = false;
-        self.retired = true;
+        self.lifecycle = PoolLifecycle::Withdrawn;
         Ok(reserves)
     }
 
+    /// Reports logical timestamp expiry without requiring a state write.
+    #[must_use]
+    pub fn effective_lifecycle(&self, now: u64) -> PoolLifecycle {
+        if self.lifecycle == PoolLifecycle::Open
+            && self.close_timestamp.is_some_and(|close| now >= close)
+        {
+            PoolLifecycle::Closed
+        } else {
+            self.lifecycle
+        }
+    }
+
     fn ensure_swappable(&self, now: u64) -> Result<(), SwapError> {
-        if !self.open || self.retired || self.close_timestamp.is_some_and(|close| now >= close) {
+        if self.effective_lifecycle(now) != PoolLifecycle::Open {
             Err(SwapError::Closed)
         } else {
             Ok(())
+        }
+    }
+
+    fn close_if_depleted(&mut self) {
+        let depleted = match self.close_on_depletion {
+            Some(TokenSide::Token0) => self.real_reserve0 == 0,
+            Some(TokenSide::Token1) => self.real_reserve1 == 0,
+            None => false,
+        };
+        if depleted {
+            self.lifecycle = PoolLifecycle::Closed;
         }
     }
 
@@ -409,20 +461,19 @@ mod tests {
 
     #[test]
     fn create_pool_records_both_real_reserves_and_optional_close_time() {
-        let pool = Pool::create(800, 25, 1000, 100, Some(42)).expect("valid pool");
+        let pool = Pool::create(800, 25, 1000, 100, Some(42), None).expect("valid pool");
         assert_eq!(pool.real_reserve0, 800);
         assert_eq!(pool.real_reserve1, 25);
         assert_eq!(pool.virtual_reserve0, 1000);
         assert_eq!(pool.virtual_reserve1, 100);
         assert_eq!(pool.close_timestamp, Some(42));
         assert_eq!(pool.k, 100_000);
-        assert!(pool.open);
-        assert!(!pool.retired);
+        assert_eq!(pool.lifecycle, PoolLifecycle::Open);
     }
 
     #[test]
     fn exact_input_swaps_token0_for_token1_through_the_public_pool_api() {
-        let mut pool = Pool::create(800, 100, 1000, 100, None).expect("valid pool");
+        let mut pool = Pool::create(800, 100, 1000, 100, None, None).expect("valid pool");
         let outcome = pool
             .swap_exact_input(TokenSide::Token0, 250, 20, 0, 0, 1)
             .expect("swap succeeds");
@@ -437,8 +488,46 @@ mod tests {
     }
 
     #[test]
+    fn final_exact_input_swap_closes_a_pool_configured_to_close_on_token0_depletion() {
+        let mut pool =
+            Pool::create(80, 0, 100, 100, None, Some(TokenSide::Token0)).expect("valid pool");
+
+        let outcome = pool
+            .swap_exact_input(TokenSide::Token1, 400, 80, 0, 0, 1)
+            .expect("final swap succeeds");
+
+        assert_eq!(outcome.amount_out, 80);
+        assert_eq!(pool.real_reserve0, 0);
+        assert_eq!(pool.effective_lifecycle(1), PoolLifecycle::Closed);
+        assert_eq!(
+            pool.swap_exact_input(TokenSide::Token1, 1, 0, 0, 0, 1),
+            Err(SwapError::Closed)
+        );
+    }
+
+    #[test]
+    fn final_exact_output_swap_closes_a_pool_configured_to_close_on_token0_depletion() {
+        let mut pool =
+            Pool::create(80, 0, 100, 100, None, Some(TokenSide::Token0)).expect("valid pool");
+
+        pool.swap_exact_output(TokenSide::Token1, 80, u128::MAX, 0, 0, 1)
+            .expect("final swap succeeds");
+
+        assert_eq!(pool.real_reserve0, 0);
+        assert_eq!(pool.effective_lifecycle(1), PoolLifecycle::Closed);
+    }
+
+    #[test]
+    fn configured_zero_depletion_reserve_is_rejected() {
+        assert_eq!(
+            Pool::create(0, 1, 100, 100, None, Some(TokenSide::Token0)),
+            Err(CreateError::DepletionReserveZero)
+        );
+    }
+
+    #[test]
     fn exact_input_pool_fee_is_retained_in_whichever_token_is_input() {
-        let mut token0_in = Pool::create(800, 100, 1000, 100, None).expect("valid pool");
+        let mut token0_in = Pool::create(800, 100, 1000, 100, None, None).expect("valid pool");
         let forward = token0_in
             .swap_exact_input(TokenSide::Token0, 250, 18, 1_000, 0, 1)
             .expect("token0 input succeeds");
@@ -446,7 +535,7 @@ mod tests {
         assert_eq!(forward.amount_out, 18);
         assert_eq!(token0_in.real_reserve0, 1050);
 
-        let mut token1_in = Pool::create(800, 100, 1000, 100, None).expect("valid pool");
+        let mut token1_in = Pool::create(800, 100, 1000, 100, None, None).expect("valid pool");
         let reverse = token1_in
             .swap_exact_input(TokenSide::Token1, 25, 180, 1_000, 0, 1)
             .expect("token1 input succeeds");
@@ -457,7 +546,7 @@ mod tests {
 
     #[test]
     fn exact_output_swaps_token1_for_token0_with_the_fee_inside_max_input() {
-        let mut pool = Pool::create(800, 100, 1000, 100, None).expect("valid pool");
+        let mut pool = Pool::create(800, 100, 1000, 100, None, None).expect("valid pool");
         let outcome = pool
             .swap_exact_output(TokenSide::Token1, 200, 28, 1_000, 0, 1)
             .expect("swap succeeds");
@@ -475,7 +564,7 @@ mod tests {
     #[test]
     fn exact_output_uses_the_smallest_fee_inclusive_gross_input() {
         for fee_bps in [1, 2_500, 9_999] {
-            let mut pool = Pool::create(800, 100, 1000, 100, None).expect("valid pool");
+            let mut pool = Pool::create(800, 100, 1000, 100, None, None).expect("valid pool");
             let outcome = pool
                 .swap_exact_output(TokenSide::Token1, 100, u128::MAX, fee_bps, 0, 1)
                 .expect("swap succeeds");
@@ -494,18 +583,20 @@ mod tests {
 
     #[test]
     fn expiry_allows_full_withdrawal_without_a_close_transaction_and_retires_the_pool() {
-        let mut pool = Pool::create(800, 25, 1000, 100, Some(42)).expect("valid pool");
+        let mut pool = Pool::create(800, 25, 1000, 100, Some(42), None).expect("valid pool");
         assert_eq!(pool.withdraw_reserves(42), Ok((800, 25)));
         assert_eq!(pool.real_reserve0, 0);
         assert_eq!(pool.real_reserve1, 0);
-        assert!(!pool.open);
-        assert!(pool.retired);
-        assert_eq!(pool.withdraw_reserves(43), Err(WithdrawError::Retired));
+        assert_eq!(pool.lifecycle, PoolLifecycle::Withdrawn);
+        assert_eq!(
+            pool.withdraw_reserves(43),
+            Err(WithdrawError::AlreadyWithdrawn)
+        );
     }
 
     #[test]
     fn swaps_are_rejected_at_the_close_timestamp_without_mutating_reserves() {
-        let mut pool = Pool::create(800, 100, 1000, 100, Some(42)).expect("valid pool");
+        let mut pool = Pool::create(800, 100, 1000, 100, Some(42), None).expect("valid pool");
         let before = pool.clone();
         assert_eq!(
             pool.swap_exact_input(TokenSide::Token0, 250, 20, 0, 0, 42),
@@ -516,53 +607,57 @@ mod tests {
 
     #[test]
     fn a_swap_cannot_exceed_the_selected_real_output_reserve() {
-        let mut pool = Pool::create(800, 10, 1000, 100, None).expect("valid pool");
+        let mut pool = Pool::create(800, 10, 1000, 100, None, None).expect("valid pool");
         let before = pool.clone();
         assert_eq!(
             pool.swap_exact_input(TokenSide::Token0, 250, 0, 0, 0, 1),
             Err(SwapError::InsufficientRealOutputReserve)
         );
         assert_eq!(pool, before);
-        assert!(pool.open, "reserve exhaustion must not auto-close the pool");
+        assert_eq!(
+            pool.lifecycle,
+            PoolLifecycle::Open,
+            "unconfigured depletion must not close the pool"
+        );
     }
 
     #[test]
     fn manual_close_allows_full_withdrawal_for_a_pool_without_expiry() {
-        let mut pool = Pool::create(800, 25, 1000, 100, None).expect("valid pool");
+        let mut pool = Pool::create(800, 25, 1000, 100, None, None).expect("valid pool");
         assert_eq!(pool.withdraw_reserves(1), Err(WithdrawError::StillOpen));
-        pool.close_pool();
+        assert_eq!(pool.close_pool(1), Ok(()));
         assert_eq!(pool.withdraw_reserves(1), Ok((800, 25)));
-        assert!(pool.retired);
+        assert_eq!(pool.lifecycle, PoolLifecycle::Withdrawn);
     }
 
     #[test]
     fn create_bounds_both_virtual_reserves_below_two_to_the_64() {
         assert_eq!(
-            Pool::create(800, 0, 1 << 64, 100, None),
+            Pool::create(800, 0, 1 << 64, 100, None, None),
             Err(CreateError::VirtualReserveAboveBound)
         );
         assert_eq!(
-            Pool::create(800, 0, 1000, 1 << 64, None),
+            Pool::create(800, 0, 1000, 1 << 64, None, None),
             Err(CreateError::VirtualReserveAboveBound)
         );
-        assert!(Pool::create(800, 0, (1 << 64) - 1, (1 << 64) - 1, None).is_ok());
+        assert!(Pool::create(800, 0, (1 << 64) - 1, (1 << 64) - 1, None, None).is_ok());
     }
 
     #[test]
     fn create_requires_both_virtual_reserves_to_price_the_pool() {
         assert_eq!(
-            Pool::create(800, 200, 1000, 0, None),
+            Pool::create(800, 200, 1000, 0, None, None),
             Err(CreateError::VirtualReserveZero)
         );
         assert_eq!(
-            Pool::create(800, 200, 0, 100, None),
+            Pool::create(800, 200, 0, 100, None, None),
             Err(CreateError::VirtualReserveZero)
         );
     }
 
     #[test]
     fn a_pool_survives_a_borsh_round_trip() {
-        let pool = Pool::create(800, 200, 1000, 100, Some(42)).expect("valid pool");
+        let pool = Pool::create(800, 200, 1000, 100, Some(42), None).expect("valid pool");
         let bytes = borsh::to_vec(&pool).expect("pool serialises");
         assert_eq!(Pool::try_from_slice(&bytes).expect("bytes parse"), pool);
     }

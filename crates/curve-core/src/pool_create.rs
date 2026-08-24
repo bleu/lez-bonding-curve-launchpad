@@ -5,7 +5,7 @@ use lee_core::{
     account::{Account, AccountId, AccountWithMetadata, Data},
     program::{AccountPostState, ChainedCall, Claim, ProgramId},
 };
-use pool::Pool;
+use pool::{Pool, TokenSide};
 use token_core::{TokenDefinition, TokenHolding};
 
 use crate::{
@@ -26,11 +26,13 @@ pub fn create_pool(
     owner_token1_ata: AccountWithMetadata,
     pool_token0_ata: AccountWithMetadata,
     pool_token1_ata: AccountWithMetadata,
+    clock: AccountWithMetadata,
     token0_amount: u128,
     token1_amount: u128,
     virtual_reserve0: u128,
     virtual_reserve1: u128,
     close_timestamp: Option<u64>,
+    close_on_depletion: Option<TokenSide>,
     expected_owner: AccountId,
     curve_program_id: ProgramId,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
@@ -90,12 +92,22 @@ pub fn create_pool(
         ata_program_id,
     );
 
+    assert_eq!(
+        clock.account_id,
+        clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID,
+        "Clock account is not the trusted LEZ clock"
+    );
+    let now = clock_core::ClockAccountData::from_bytes(clock.account.data.as_ref()).timestamp;
+    if let Some(close) = close_timestamp {
+        assert!(close > now, "Close timestamp must be in the future");
+    }
     let pool = Pool::create(
         token0_amount,
         token1_amount,
         virtual_reserve0,
         virtual_reserve1,
         close_timestamp,
+        close_on_depletion,
     )
     .expect("Pool parameters are invalid");
     let mut pool_post = pool_account.account;

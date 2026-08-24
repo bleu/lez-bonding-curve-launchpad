@@ -3342,6 +3342,7 @@ dependencies = [
  "common",
  "hex",
  "launchpad-client",
+ "pool",
  "serde",
  "serde_json",
  "tokio",

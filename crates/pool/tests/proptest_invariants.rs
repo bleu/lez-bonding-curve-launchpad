@@ -1,4 +1,4 @@
-use pool::{Pool, SwapOutcome, TokenSide};
+use pool::{Pool, PoolLifecycle, SwapOutcome, TokenSide};
 use proptest::prelude::*;
 
 #[derive(Clone, Debug)]
@@ -99,17 +99,18 @@ fn pool_strategy() -> impl Strategy<Value = Pool> {
             1_u128..1_000_000,
         )
             .prop_map(|(real0, real1, virtual0, virtual1)| {
-                Pool::create(real0, real1, virtual0, virtual1, None)
+                Pool::create(real0, real1, virtual0, virtual1, None, None)
                     .expect("generated pool is valid")
             }),
         1 => prop::sample::select(vec![
-            Pool::create(0, u128::MAX, 1, (1_u128 << 64) - 1, None)
+            Pool::create(0, u128::MAX, 1, (1_u128 << 64) - 1, None, None)
                 .expect("boundary pool"),
             Pool::create(
                 u128::MAX,
                 u128::MAX,
                 (1_u128 << 64) - 1,
                 (1_u128 << 64) - 1,
+                None,
                 None,
             )
             .expect("maximum-reserve pool"),
@@ -164,7 +165,7 @@ fn assert_successful_swap(before: &Pool, after: &Pool, side: TokenSide, outcome:
 
 #[test]
 fn combined_fee_rounds_once_and_splits_deterministically() {
-    let mut pool = Pool::create(800, 800, 1_000, 1_000, None).expect("valid pool");
+    let mut pool = Pool::create(800, 800, 1_000, 1_000, None, None).expect("valid pool");
     let outcome = pool
         .swap_exact_input(TokenSide::Token0, 101, 0, 100, 100, 0)
         .expect("swap succeeds");
@@ -176,8 +177,8 @@ fn combined_fee_rounds_once_and_splits_deterministically() {
 
 #[test]
 fn manual_close_and_withdraw_are_permanent_and_post_close_swaps_fail_atomically() {
-    let mut pool = Pool::create(800, 200, 1_000, 100, None).expect("valid pool");
-    pool.close_pool();
+    let mut pool = Pool::create(800, 200, 1_000, 100, None, None).expect("valid pool");
+    assert_eq!(pool.close_pool(0), Ok(()));
     let closed = pool.clone();
     assert!(
         pool.swap_exact_input(TokenSide::Token0, 10, 0, 0, 0, 0)
@@ -241,8 +242,8 @@ proptest! {
                     Err(_) => prop_assert_eq!(&pool, &before),
                 },
                 Action::Close => {
-                    pool.close_pool();
-                    prop_assert!(!pool.open || pool.retired);
+                    let _ = pool.close_pool(0);
+                    prop_assert_ne!(pool.lifecycle, PoolLifecycle::Open);
                     prop_assert_eq!(pool.k, before.k);
                     prop_assert_eq!(pool.real_reserve0, before.real_reserve0);
                     prop_assert_eq!(pool.real_reserve1, before.real_reserve1);
@@ -251,8 +252,7 @@ proptest! {
                     Ok((amount0, amount1)) => {
                         prop_assert_eq!((amount0, amount1), (before.real_reserve0, before.real_reserve1));
                         prop_assert_eq!((pool.real_reserve0, pool.real_reserve1), (0, 0));
-                        prop_assert!(pool.retired);
-                        prop_assert!(!pool.open);
+                        prop_assert_eq!(pool.lifecycle, PoolLifecycle::Withdrawn);
                     }
                     Err(_) => prop_assert_eq!(&pool, &before),
                 },

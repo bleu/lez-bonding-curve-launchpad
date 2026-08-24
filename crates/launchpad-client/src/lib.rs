@@ -30,8 +30,6 @@ use sequencer_service_rpc::RpcClient as _;
 use serde::Serialize;
 use wallet::WalletCore;
 
-pub use factory_core::UnlockPolicy;
-
 /// Accepts `Public/<base58>`, `Private/<base58>`, or a bare base58 id.
 ///
 /// The wallet CLI prints the prefixed form while `AccountId` itself parses
@@ -60,7 +58,7 @@ pub struct CreateSaleRequest {
     pub creator_allocation: u128,
     pub virtual_token_reserve: u128,
     pub virtual_collateral_reserve: u128,
-    pub unlock_policy: UnlockPolicy,
+    pub end_timestamp: Option<u64>,
     pub collateral_definition: AccountId,
 }
 
@@ -200,6 +198,7 @@ pub fn build_create_sale_invocation(
         pool,
         associated_token_account(pool, token_definition),
         associated_token_account(pool, request.collateral_definition),
+        clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID,
     ];
     Ok(PublicInvocation {
         program_id: factory_program_id,
@@ -214,7 +213,7 @@ pub fn build_create_sale_invocation(
             creator_allocation: request.creator_allocation,
             virtual_token_reserve: request.virtual_token_reserve,
             virtual_collateral_reserve: request.virtual_collateral_reserve,
-            unlock_policy: request.unlock_policy,
+            end_timestamp: request.end_timestamp,
             curve_program_id,
         },
     })
@@ -238,7 +237,12 @@ pub fn build_close_factory_pool_invocation(
     );
     PublicInvocation {
         program_id: factory_program_id,
-        account_ids: vec![factory, pool, creator],
+        account_ids: vec![
+            factory,
+            pool,
+            creator,
+            clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
         signer_accounts: vec![creator],
         instruction: FactoryInstruction::CloseFactoryPool,
     }
@@ -247,7 +251,7 @@ pub fn build_close_factory_pool_invocation(
 /// Builds the creator-authorized factory withdrawal that retires a closed (or expired) pool
 /// and forwards its remaining reserves under the factory's allocation policy.
 #[must_use]
-pub fn build_withdraw_factory_pool_invocation(
+pub fn build_withdraw_factory_proceeds_invocation(
     factory_program_id: ProgramId,
     curve_program_id: ProgramId,
     creator: AccountId,
@@ -268,22 +272,22 @@ pub fn build_withdraw_factory_pool_invocation(
             creator,
             token_definition,
             collateral_definition,
-            associated_token_account(pool, token_definition),
-            associated_token_account(pool, collateral_definition),
             associated_token_account(factory, token_definition),
             associated_token_account(factory, collateral_definition),
+            associated_token_account(pool, token_definition),
+            associated_token_account(pool, collateral_definition),
             associated_token_account(creator, token_definition),
             associated_token_account(creator, collateral_definition),
             clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
         signer_accounts: vec![creator],
-        instruction: FactoryInstruction::WithdrawFactoryPool,
+        instruction: FactoryInstruction::WithdrawFactoryProceeds,
     }
 }
 
 /// Builds the creator-authorized release of an `OnClose` allocation from factory escrow.
 #[must_use]
-pub fn build_unlock_creator_allocation_invocation(
+pub fn build_claim_creator_allocation_invocation(
     factory_program_id: ProgramId,
     curve_program_id: ProgramId,
     creator: AccountId,
@@ -305,9 +309,10 @@ pub fn build_unlock_creator_allocation_invocation(
             creator,
             token_definition,
             associated_token_account(creator, token_definition),
+            clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
         signer_accounts: vec![creator],
-        instruction: FactoryInstruction::UnlockCreatorAllocation,
+        instruction: FactoryInstruction::ClaimCreatorAllocation,
     }
 }
 
@@ -501,17 +506,17 @@ fn associated_token_account(owner: AccountId, token_definition: AccountId) -> Ac
 #[cfg(test)]
 mod tests {
     use factory_core::{
-        UnlockPolicy, compute_definition_pda, compute_escrow_pda, compute_factory_pda,
-        compute_metadata_pda, compute_mint_pda,
+        compute_definition_pda, compute_escrow_pda, compute_factory_pda, compute_metadata_pda,
+        compute_mint_pda,
     };
     use lee::AccountId;
     use pool::Pool;
 
     use super::{
         BuyRequest, CreateSaleRequest, SellRequest, build_buy_invocation,
-        build_close_factory_pool_invocation, build_create_sale_invocation, build_sell_invocation,
-        build_unlock_creator_allocation_invocation, build_update_config_invocation,
-        build_withdraw_factory_pool_invocation, quote_buy,
+        build_claim_creator_allocation_invocation, build_close_factory_pool_invocation,
+        build_create_sale_invocation, build_sell_invocation, build_update_config_invocation,
+        build_withdraw_factory_proceeds_invocation, quote_buy,
     };
 
     const FACTORY_PROGRAM_ID: [u32; 8] = [7; 8];
@@ -535,7 +540,7 @@ mod tests {
                 creator_allocation: 50,
                 virtual_token_reserve: 2_000,
                 virtual_collateral_reserve: 100,
-                unlock_policy: UnlockPolicy::OnClose,
+                end_timestamp: None,
                 collateral_definition,
             },
         )
@@ -556,7 +561,7 @@ mod tests {
                 creator,
             ]
         );
-        assert_eq!(invocation.account_ids.len(), 13);
+        assert_eq!(invocation.account_ids.len(), 14);
         assert_eq!(invocation.account_ids[7], collateral_definition);
     }
 
@@ -611,6 +616,7 @@ mod tests {
                     factory,
                 ),
                 creator,
+                clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID,
             ]
         );
         assert!(matches!(
@@ -620,11 +626,11 @@ mod tests {
     }
 
     #[test]
-    fn creator_unlock_uses_the_factory_escrow_and_derived_recipient_ata() {
+    fn creator_claim_uses_the_factory_escrow_and_derived_recipient_ata() {
         let launch_salt = [1; 32];
         let creator = AccountId::new([9; 32]);
         let collateral_definition = AccountId::new([5; 32]);
-        let invocation = build_unlock_creator_allocation_invocation(
+        let invocation = build_claim_creator_allocation_invocation(
             FACTORY_PROGRAM_ID,
             CURVE_PROGRAM_ID,
             creator,
@@ -648,7 +654,7 @@ mod tests {
         );
         assert!(matches!(
             invocation.instruction,
-            factory_core::Instruction::UnlockCreatorAllocation
+            factory_core::Instruction::ClaimCreatorAllocation
         ));
     }
 
@@ -761,7 +767,7 @@ mod tests {
             token0_definition_id: token_definition,
             token1_definition_id: collateral_definition,
             owner: AccountId::new([1; 32]),
-            pool: Pool::create(800, 100, 1_000, 100, None).expect("valid pool"),
+            pool: Pool::create(800, 100, 1_000, 100, None, None).expect("valid pool"),
         };
         let config = curve_core::Config {
             admin: AccountId::new([3; 32]),
@@ -780,7 +786,7 @@ mod tests {
         let launch_salt = [1; 32];
         let creator = AccountId::new([9; 32]);
         let collateral_definition = AccountId::new([5; 32]);
-        let invocation = build_withdraw_factory_pool_invocation(
+        let invocation = build_withdraw_factory_proceeds_invocation(
             FACTORY_PROGRAM_ID,
             CURVE_PROGRAM_ID,
             creator,
@@ -804,7 +810,7 @@ mod tests {
         );
         assert!(matches!(
             invocation.instruction,
-            factory_core::Instruction::WithdrawFactoryPool
+            factory_core::Instruction::WithdrawFactoryProceeds
         ));
     }
 }
