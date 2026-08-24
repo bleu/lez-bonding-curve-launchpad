@@ -93,6 +93,18 @@ cat >"$tmp_dir/bin/cargo" <<'EOF'
 set -euo pipefail
 printf '%s\n' "$*" >>"$E2E_COMMAND_LOG"
 case "$*" in
+  *' --max-collateral 0'*)
+    printf '%s\n' '{"status":"error","error":{"category":"slippage_floor"}}'
+    exit 1
+    ;;
+  *' --tokens 1001 '*)
+    printf '%s\n' '{"status":"error","error":{"category":"sale_reserve_overshoot"}}'
+    exit 1
+    ;;
+  *' sell '*' --tokens 1000 '*)
+    printf '%s\n' '{"status":"error","error":{"category":"collateral_reserve_overshoot"}}'
+    exit 1
+    ;;
   *' price '*) printf '%s\n' '{"amount_in":100}' ;;
   *' status '*)
     count=$(cat "$E2E_STATUS_COUNT")
@@ -128,6 +140,12 @@ rg -qx 'localnet stop' "$log_file" \
   || fail "the walkthrough must stop the managed localnet on exit"
 rg -q -- '--json create-sale' "$log_file" \
   || fail "the walkthrough must create the fixture through launchpad JSON output"
+rg -q -- '--creator Public/admin' "$log_file" \
+  || fail "the walkthrough must pass the creator account to create-sale"
+rg -q -- '--factory-program-path target/factory.bin' "$log_file" \
+  || fail "the walkthrough must pass the factory binary to create-sale"
+rg -q -- '--curve-program-path target/curve.bin' "$log_file" \
+  || fail "the walkthrough must pass the curve binary to create-sale"
 
 printf 'ok: managed localnet is reset and stopped\n'
 

@@ -78,6 +78,23 @@ run_launchpad_json() {
   printf '%s\n' "$response"
 }
 
+expect_launchpad_error() {
+  local checkpoint=$1
+  local expected_category=$2
+  shift 2
+
+  local response
+  if response=$(cargo run --quiet -p launchpad-cli -- --json "$@" 2>&1); then
+    fail "$checkpoint unexpectedly succeeded"
+  fi
+  assert_json "$checkpoint" "$response"
+  jq -e --arg category "$expected_category" \
+    '.status == "error" and .error.category == $category' \
+    >/dev/null <<<"$response" \
+    || fail "$checkpoint did not return error category $expected_category"
+  printf '%s\n' "$response"
+}
+
 new_public_account() {
   local account
   account=$(LOGOS_SCAFFOLD_QUIET=1 lgs wallet -- account new public) \
@@ -156,6 +173,33 @@ launch=$(run_launchpad_json "factory launch" \
 jq -e --arg launch_salt "$launch_salt" '.launch_salt == $launch_salt' >/dev/null <<<"$launch" \
   || fail "factory launch JSON must report the fixture launch salt"
 printf 'factory launch: %s\n' "$(jq -c . <<<"$launch")"
+
+expect_launchpad_error "slippage floor" slippage_floor buy \
+  --launch-salt "$launch_salt" \
+  --collateral-definition "Public/$collateral_definition" \
+  --participant "Public/$buyer_one" \
+  --factory-program-path "$factory_program_path" \
+  --curve-program-path "$curve_program_path" \
+  --tokens 1 \
+  --max-collateral 0
+
+expect_launchpad_error "sale reserve overshoot" sale_reserve_overshoot buy \
+  --launch-salt "$launch_salt" \
+  --collateral-definition "Public/$collateral_definition" \
+  --participant "Public/$buyer_one" \
+  --factory-program-path "$factory_program_path" \
+  --curve-program-path "$curve_program_path" \
+  --tokens 1001 \
+  --max-collateral 100000
+
+expect_launchpad_error "collateral reserve overshoot" collateral_reserve_overshoot sell \
+  --launch-salt "$launch_salt" \
+  --collateral-definition "Public/$collateral_definition" \
+  --participant "Public/$buyer_one" \
+  --factory-program-path "$factory_program_path" \
+  --curve-program-path "$curve_program_path" \
+  --tokens 1000 \
+  --min-collateral 0
 
 for buyer in "$buyer_one" "$buyer_two" "$buyer_three"; do
   quote=$(run_launchpad_json "buy quote" price \

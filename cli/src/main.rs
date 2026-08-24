@@ -15,10 +15,48 @@ use launchpad_client::{
     build_sell_invocation, build_unlock_creator_allocation_invocation,
     build_withdraw_factory_pool_invocation, load_curve_config, load_factory_pool,
     load_factory_state, load_program, parse_account_id, quote_buy, quote_buy_with_collateral,
-    submit_public_invocation,
+    quote_sell, submit_public_invocation,
 };
 use serde::Serialize;
 use wallet::WalletCore;
+
+#[derive(Debug, Clone, Copy)]
+enum ErrorCategory {
+    SlippageFloor,
+    SaleReserveOvershoot,
+    CollateralReserveOvershoot,
+    General,
+}
+
+impl ErrorCategory {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::SlippageFloor => "slippage_floor",
+            Self::SaleReserveOvershoot => "sale_reserve_overshoot",
+            Self::CollateralReserveOvershoot => "collateral_reserve_overshoot",
+            Self::General => "general",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ClassifiedError {
+    category: ErrorCategory,
+}
+
+impl std::fmt::Display for ClassifiedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.category.fmt(f)
+    }
+}
+
+impl std::error::Error for ClassifiedError {}
+
+impl std::fmt::Display for ErrorCategory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str((*self).as_str())
+    }
+}
 
 #[derive(Debug, Parser)]
 #[command(name = "launchpad", version, about = "Bonding curve launchpad on the Logos Execution Zone", styles = Styles::styled())]
@@ -220,9 +258,29 @@ struct PriceQuote {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
     let cli = Cli::parse();
     let json = cli.json;
+    if let Err(error) = run(json, cli).await {
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "status": "error",
+                    "error": {
+                        "category": classify_error(&error).as_str(),
+                        "message": error.to_string(),
+                    },
+                })
+            );
+        } else {
+            eprintln!("Error: {error:#}");
+        }
+        std::process::exit(1);
+    }
+}
+
+async fn run(json: bool, cli: Cli) -> Result<()> {
     match cli.command {
         Command::CreateSale(args) => create_sale(json, args).await,
         Command::Close(args) => close_factory_pool(json, args).await,
@@ -234,6 +292,27 @@ async fn main() -> Result<()> {
         Command::Status(args) | Command::SaleInfo(args) => sale_snapshot(json, args).await,
         Command::Configure(args) => configure(json, args).await,
     }
+}
+
+fn classify_error(error: &anyhow::Error) -> ErrorCategory {
+    if let Some(classified) = error.downcast_ref::<ClassifiedError>() {
+        return classified.category;
+    }
+
+    let message = error.to_string().to_lowercase();
+    if message.contains("slippage") || message.contains("max_amount_in") {
+        ErrorCategory::SlippageFloor
+    } else if message.contains("sale reserve") || message.contains("real_reserve0") {
+        ErrorCategory::SaleReserveOvershoot
+    } else if message.contains("collateral reserve") || message.contains("real_reserve1") {
+        ErrorCategory::CollateralReserveOvershoot
+    } else {
+        ErrorCategory::General
+    }
+}
+
+fn classified(category: ErrorCategory) -> anyhow::Error {
+    ClassifiedError { category }.into()
 }
 
 async fn configure(json: bool, args: ConfigArgs) -> Result<()> {
@@ -391,6 +470,25 @@ async fn buy(json: bool, args: BuyArgs) -> Result<()> {
     let collateral_definition = parse_account_id(&args.trade.collateral_definition)?;
     let wallet = WalletCore::from_env().context("opening the project wallet")?;
     let config = load_curve_config(&wallet, curve_program.id()).await?;
+    let pool = load_factory_pool(
+        &wallet,
+        factory_program.id(),
+        curve_program.id(),
+        args.trade.launch.launch_salt,
+        collateral_definition,
+    )
+    .await?;
+    if args.tokens > pool.pool.real_reserve0 {
+        return Err(classified(ErrorCategory::SaleReserveOvershoot));
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("reading the current time")?
+        .as_secs();
+    let quote = quote_buy(&pool, &config, args.tokens, now)?;
+    if quote.amount_in > args.max_collateral {
+        return Err(classified(ErrorCategory::SlippageFloor));
+    }
     let invocation = build_buy_invocation(
         factory_program.id(),
         curve_program.id(),
@@ -419,6 +517,25 @@ async fn sell(json: bool, args: SellArgs) -> Result<()> {
     let collateral_definition = parse_account_id(&args.trade.collateral_definition)?;
     let wallet = WalletCore::from_env().context("opening the project wallet")?;
     let config = load_curve_config(&wallet, curve_program.id()).await?;
+    let pool = load_factory_pool(
+        &wallet,
+        factory_program.id(),
+        curve_program.id(),
+        args.trade.launch.launch_salt,
+        collateral_definition,
+    )
+    .await?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("reading the current time")?
+        .as_secs();
+    let quote = quote_sell(&pool, &config, args.tokens, now)?;
+    if quote.amount_out > pool.pool.real_reserve1 {
+        return Err(classified(ErrorCategory::CollateralReserveOvershoot));
+    }
+    if quote.amount_out < args.min_collateral {
+        return Err(classified(ErrorCategory::SlippageFloor));
+    }
     let invocation = build_sell_invocation(
         factory_program.id(),
         curve_program.id(),
@@ -759,6 +876,37 @@ mod tests {
         ])
         .expect("price command should parse");
         assert!(matches!(cli.command, Command::Price(_)));
+    }
+
+    #[test]
+    fn configure_accepts_the_curve_admin_and_treasury_context() {
+        let cli = Cli::try_parse_from([
+            "launchpad",
+            "--json",
+            "configure",
+            "--admin",
+            "Public/admin",
+            "--treasury",
+            "Public/treasury",
+            "--curve-program-path",
+            "curve.bin",
+        ])
+        .expect("configure command should parse");
+        assert!(matches!(cli.command, Command::Configure(_)));
+    }
+
+    #[test]
+    fn json_error_categories_are_stable() {
+        for (message, expected) in [
+            ("slippage cap exceeded", "slippage_floor"),
+            ("sale reserve exhausted", "sale_reserve_overshoot"),
+            (
+                "collateral reserve exhausted",
+                "collateral_reserve_overshoot",
+            ),
+        ] {
+            assert_eq!(classify_error(&anyhow::anyhow!(message)).as_str(), expected);
+        }
     }
 
     #[test]
