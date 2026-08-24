@@ -82,15 +82,15 @@ pub struct PrivateBuyRequest {
     pub gas_reserve: u128,
 }
 
-/// Rejects private buy while the pinned LEZ transaction model cannot uphold its
-/// atomic initial funding guarantee.
+/// Rejects private buy until the SDK has a validated atomic initial-funding
+/// implementation for the pinned LEZ release.
 pub fn validate_private_buy_request(request: PrivateBuyRequest) -> Result<()> {
     if request.gas_reserve == 0 {
         return Err(anyhow!("private buy requires a non-zero gas reserve"));
     }
 
     Err(anyhow!(
-        "private buy is unavailable on LEZ v0.2.0: custom-token collateral and native gas cannot be deshielded in one atomic privacy-preserving transaction"
+        "private buy is unavailable: this SDK has no validated atomic custom-collateral-and-native-gas deshield implementation for LEZ v0.2.0"
     ))
 }
 
@@ -841,9 +841,11 @@ mod tests {
     fn private_buy_refuses_to_split_collateral_and_native_gas_deshielding() {
         let error =
             super::validate_private_buy_request(super::PrivateBuyRequest { gas_reserve: 1 })
-                .expect_err("the pinned LEZ release cannot atomically deshield two assets");
+                .expect_err(
+                    "the SDK must reject until its atomic deshield implementation is validated",
+                );
 
-        assert!(error.to_string().contains("one atomic"));
+        assert!(error.to_string().contains("no validated atomic"));
     }
 
     #[test]
