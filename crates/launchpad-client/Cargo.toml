@@ -5,8 +5,18 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+associated_token_account_core.workspace = true
 anyhow.workspace = true
+common.workspace = true
+clock_core.workspace = true
+curve-core.workspace = true
+factory-core.workspace = true
 lee.workspace = true
+lee_core.workspace = true
+pool.workspace = true
+sequencer_service_rpc.workspace = true
+serde.workspace = true
+wallet.workspace = true
 
 [lints]
 workspace = true
