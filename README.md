@@ -31,6 +31,11 @@ cargo test --workspace
 lgs build                # builds host workspace and RISC0 guest binaries
 ```
 
+With this excluded `methods/` workspace, scaffold currently writes guest artifacts beneath
+`methods/target/riscv-guest/…/release/`; a custom build may instead use
+`target/riscv-guest/…/release/`. The walkthrough accepts either layout and resolves both
+program paths itself.
+
 Nix is not required. Scaffold needs it only for `lgs basecamp`, which is outside this PoC.
 
 ## Solvency and supply boundary
@@ -55,7 +60,7 @@ Status is evidence-aware: **implemented and demonstrated** means the canonical l
 
 | RFP-015 requirement | Implementation location | Verification evidence | Status |
 | --- | --- | --- | --- |
-| F1: deterministic two-way curve, integer pricing, reserve backing, inverse quote | `crates/curve-math`, `crates/pool`, `crates/launchpad-client` | math/unit/property tests; `verify/e2e.sh` buys and sells a deployed launch | **implemented and demonstrated** |
+| F1: deterministic two-way curve, integer pricing, reserve backing, inverse quote | `crates/curve-math`, `crates/pool`, `crates/launchpad-client` | math/unit/property tests; `verify/e2e.sh` exercises both collateral-input and exact-output buys plus a sell on a deployed launch | **implemented and demonstrated** |
 | F2: creator-defined `D`, optional `R`, virtual reserves, distinct allocations | `crates/factory-core`, factory `CreateFactoryPool` | factory tests; walkthrough creates `D=1000`, `R=100` and inspects terminal reserve | **implemented and demonstrated** |
 | F3: public and deshield→trade→re-shield participation | public CLI/client in `launchpad-client`; privacy boundary in [ADR 0005](docs/adr/0005-private-trade-boundary-and-verification.md) | walkthrough exercises public trades only | **not covered** for the private path |
 | F4: automatic close when sale reserve exhausts | factory token0 depletion policy; `Pool::close_if_depleted` | walkthrough buys the remaining reserve and asserts `closed` | **implemented and demonstrated** |
@@ -64,7 +69,7 @@ Status is evidence-aware: **implemented and demonstrated** means the canonical l
 | F7: ATA custody | `curve-core` create/swap/lifecycle adapters | adapter tests and deployed walkthrough invoke ATA transfers | **implemented and demonstrated** |
 | U01: SDK lifecycle for public and private users | `launchpad-client` | public invocation/quote tests and walkthrough | **implemented but not demonstrated** for broad discovery/position UX; private lifecycle is **not covered** |
 | U02, U04–U08: mini-app, confirmation, privacy UX, analytics | — | — | **not covered** |
-| U03: essential creator/participant CLI | `cli/src/main.rs` | CLI parsing tests and walkthrough (`configure`, `create-sale`, `price`, `buy`, `sell`, `status`, `unlock`, `withdraw`) | **implemented and demonstrated** |
+| U03: essential creator/participant CLI | `cli/src/main.rs` | CLI parsing tests and walkthrough (`configure`, `create-sale`, `price`, `buy`, `buy-with-collateral`, `sell`, `status`, `unlock`, `withdraw`) | **implemented and demonstrated** |
 | U09: SPEL-generated IDL | — | — | **not covered**; this raw LEZ template deliberately has no framework IDL ([ADR 0002](docs/adr/0002-repo-layout-and-guest-shim.md)) |
 | U10: actionable rejected-buy errors | CLI JSON error categories and pool errors | walkthrough checks slippage and reserve-overshoot error categories | **implemented and demonstrated** |
 | R1–R2: concurrent-safe invariant/accounting and atomic failed buy | checked state transitions; curve account adapters | property suite checks rejected transition atomicity; adapter tests; walkthrough rejection checkpoints | **implemented but not demonstrated** for adversarial concurrent submissions |

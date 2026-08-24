@@ -104,6 +104,23 @@ new_public_account() {
   printf '%s\n' "$account"
 }
 
+find_guest_binary() {
+  local program=$1
+  local guest_root candidate
+
+  # `lgs build` supports both the root target directory and the excluded
+  # methods-workspace target directory. Prefer the former when a custom build
+  # puts artifacts there, then fall back to this repository's default layout.
+  for guest_root in target/riscv-guest methods/target/riscv-guest; do
+    candidate=$(find "$guest_root" -type f -name "$program.bin" -print -quit 2>/dev/null || true)
+    if [[ -n "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
 topup() {
   LOGOS_SCAFFOLD_QUIET=1 lgs wallet topup "Public/$1" \
     || fail "could not fund fixture account $1"
@@ -115,10 +132,10 @@ assert_submitted_deploy "curve deployment" "$curve_deploy"
 factory_deploy=$(lgs deploy factory --json) || fail "factory deployment failed"
 assert_submitted_deploy "factory deployment" "$factory_deploy"
 
-curve_program_path=$(find target/riscv-guest -type f -name curve.bin -print -quit)
-factory_program_path=$(find target/riscv-guest -type f -name factory.bin -print -quit)
+curve_program_path=$(find_guest_binary curve || true)
+factory_program_path=$(find_guest_binary factory || true)
 [[ -n "$curve_program_path" && -n "$factory_program_path" ]] \
-  || fail "lgs build did not produce the curve and factory guest binaries"
+  || fail "lgs build did not produce the curve and factory guest binaries under target/riscv-guest or methods/target/riscv-guest"
 
 creator=${GENESIS_ADMIN_ACCOUNT#*/}
 treasury=$creator
@@ -201,7 +218,25 @@ expect_launchpad_error "collateral reserve overshoot" collateral_reserve_oversho
   --tokens 1000 \
   --min-collateral 0
 
-for buyer in "$buyer_one" "$buyer_two" "$buyer_three"; do
+collateral_quote=$(run_launchpad_json "collateral buy quote" price \
+  --launch-salt "$launch_salt" \
+  --collateral-definition "Public/$collateral_definition" \
+  --factory-program-path "$factory_program_path" \
+  --curve-program-path "$curve_program_path" \
+  --collateral 25)
+min_tokens=$(jq -er '.amount_out' <<<"$collateral_quote")
+collateral_buy=$(run_launchpad_json "collateral buy" buy-with-collateral \
+  --launch-salt "$launch_salt" \
+  --collateral-definition "Public/$collateral_definition" \
+  --participant "Public/$buyer_one" \
+  --factory-program-path "$factory_program_path" \
+  --curve-program-path "$curve_program_path" \
+  --collateral 25 \
+  --min-tokens "$min_tokens")
+jq -e '.status == "submitted"' >/dev/null <<<"$collateral_buy" \
+  || fail "collateral buy JSON did not report submission"
+
+for buyer in "$buyer_two" "$buyer_three"; do
   quote=$(run_launchpad_json "buy quote" price \
     --launch-salt "$launch_salt" \
     --collateral-definition "Public/$collateral_definition" \

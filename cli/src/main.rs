@@ -10,7 +10,8 @@ use std::{
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, builder::Styles};
 use launchpad_client::{
-    BuyRequest, CreateSaleRequest, PrivateBuyRequest, SellRequest, build_buy_invocation,
+    BuyRequest, BuyWithCollateralRequest, CreateSaleRequest, PrivateBuyRequest, SellRequest,
+    build_buy_invocation, build_buy_with_collateral_invocation,
     build_claim_creator_allocation_invocation, build_close_factory_pool_invocation,
     build_create_sale_invocation, build_sell_invocation,
     build_withdraw_factory_proceeds_invocation, load_curve_config, load_factory_pool,
@@ -77,6 +78,8 @@ enum Command {
     Withdraw(FactoryLifecycleArgs),
     Claim(FactoryLifecycleArgs),
     Buy(BuyArgs),
+    /// Spend an exact collateral amount, with a minimum launch-token output.
+    BuyWithCollateral(BuyWithCollateralArgs),
     /// Buy through the SDK-owned private lifecycle.
     PrivateBuy(PrivateBuyArgs),
     Sell(SellArgs),
@@ -149,6 +152,16 @@ struct BuyArgs {
     tokens: u128,
     #[arg(long = "max-collateral")]
     max_collateral: u128,
+}
+
+#[derive(Debug, Args)]
+struct BuyWithCollateralArgs {
+    #[command(flatten)]
+    trade: FactoryTradeArgs,
+    #[arg(long)]
+    collateral: u128,
+    #[arg(long = "min-tokens")]
+    min_tokens: u128,
 }
 
 #[derive(Debug, Args)]
@@ -307,6 +320,7 @@ async fn run(json: bool, cli: Cli) -> Result<()> {
         Command::Withdraw(args) => withdraw_factory_proceeds(json, args).await,
         Command::Claim(args) => claim_creator_allocation(json, args).await,
         Command::Buy(args) => buy(json, args).await,
+        Command::BuyWithCollateral(args) => buy_with_collateral(json, args).await,
         Command::PrivateBuy(args) => private_buy(args).await,
         Command::Sell(args) => sell(json, args).await,
         Command::Price(args) => price(json, args).await,
@@ -523,6 +537,50 @@ async fn buy(json: bool, args: BuyArgs) -> Result<()> {
     print_submission(
         json,
         "purchase",
+        transaction_hash,
+        args.trade.launch.launch_salt,
+    )
+}
+
+async fn buy_with_collateral(json: bool, args: BuyWithCollateralArgs) -> Result<()> {
+    let factory_program = load_program(&args.trade.factory_program_path)?;
+    let curve_program = load_program(&args.trade.curve_program_path)?;
+    let participant = parse_account_id(&args.trade.participant)?;
+    let collateral_definition = parse_account_id(&args.trade.collateral_definition)?;
+    let wallet = WalletCore::from_env().context("opening the project wallet")?;
+    let config = load_curve_config(&wallet, curve_program.id()).await?;
+    let pool = load_factory_pool(
+        &wallet,
+        factory_program.id(),
+        curve_program.id(),
+        args.trade.launch.launch_salt,
+        collateral_definition,
+    )
+    .await?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("reading the current time")?
+        .as_secs();
+    let quote = quote_buy_with_collateral(&pool, &config, args.collateral, now)?;
+    if quote.amount_out < args.min_tokens {
+        return Err(classified(ErrorCategory::SlippageFloor));
+    }
+    let invocation = build_buy_with_collateral_invocation(
+        factory_program.id(),
+        curve_program.id(),
+        participant,
+        config.treasury,
+        BuyWithCollateralRequest {
+            launch_salt: args.trade.launch.launch_salt,
+            collateral_definition,
+            amount_in: args.collateral,
+            min_amount_out: args.min_tokens,
+        },
+    );
+    let transaction_hash = submit_public_invocation(&wallet, &curve_program, invocation).await?;
+    print_submission(
+        json,
+        "collateral purchase",
         transaction_hash,
         args.trade.launch.launch_salt,
     )
@@ -801,6 +859,30 @@ mod tests {
         ])
         .expect("sell command should parse");
         assert!(matches!(cli.command, Command::Sell(_)));
+    }
+
+    #[test]
+    fn collateral_buy_accepts_a_collateral_budget_and_token_floor() {
+        let cli = Cli::try_parse_from([
+            "launchpad",
+            "buy-with-collateral",
+            "--launch-salt",
+            &"11".repeat(32),
+            "--collateral",
+            "25",
+            "--min-tokens",
+            "100",
+            "--collateral-definition",
+            "collateral",
+            "--participant",
+            "Public/participant",
+            "--factory-program-path",
+            "factory.bin",
+            "--curve-program-path",
+            "curve.bin",
+        ])
+        .expect("collateral buy command should parse");
+        assert!(matches!(cli.command, Command::BuyWithCollateral(_)));
     }
 
     #[test]

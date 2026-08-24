@@ -45,7 +45,7 @@ pub fn swap_exact_input(
             config_data.protocol_fee_bps,
             now,
         )
-        .expect("Exact-input swap is invalid");
+        .unwrap_or_else(|error| panic!("exact-input swap rejected: {error}"));
 
     let mut post = pool.account;
     post.data = (&pool_account).into();
@@ -88,7 +88,7 @@ pub fn swap_exact_output(
             config_data.protocol_fee_bps,
             now,
         )
-        .expect("Exact-output swap is invalid");
+        .unwrap_or_else(|error| panic!("exact-output swap rejected: {error}"));
 
     let mut post = pool.account;
     post.data = (&pool_account).into();

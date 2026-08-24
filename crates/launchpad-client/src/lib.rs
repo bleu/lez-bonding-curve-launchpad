@@ -71,6 +71,16 @@ pub struct BuyRequest {
     pub max_amount_in: u128,
 }
 
+/// Exact-input purchase inputs. The caller spends the stated collateral amount and
+/// receives at least `min_amount_out` launch tokens.
+#[derive(Debug, Clone, Copy)]
+pub struct BuyWithCollateralRequest {
+    pub launch_salt: [u8; 32],
+    pub collateral_definition: AccountId,
+    pub amount_in: u128,
+    pub min_amount_out: u128,
+}
+
 /// Inputs accepted by the SDK's private-buy boundary.
 ///
 /// This boundary intentionally checks platform support before a caller can move
@@ -376,6 +386,46 @@ pub fn build_buy_invocation(
     }
 }
 
+/// Builds a factory-launch purchase as a neutral curve exact-input swap.
+///
+/// This is the RFP's primary buy form: the participant supplies collateral and
+/// protects the resulting launch-token amount with a floor.
+#[must_use]
+pub fn build_buy_with_collateral_invocation(
+    factory_program_id: ProgramId,
+    curve_program_id: ProgramId,
+    participant: AccountId,
+    treasury: AccountId,
+    request: BuyWithCollateralRequest,
+) -> PublicInvocation<CurveInstruction> {
+    let (_, token_definition, pool) = factory_pool_addresses(
+        factory_program_id,
+        curve_program_id,
+        request.launch_salt,
+        request.collateral_definition,
+    );
+    PublicInvocation {
+        program_id: curve_program_id,
+        account_ids: vec![
+            pool,
+            compute_config_pda(curve_program_id),
+            participant,
+            associated_token_account(participant, request.collateral_definition),
+            associated_token_account(pool, request.collateral_definition),
+            associated_token_account(pool, token_definition),
+            associated_token_account(participant, token_definition),
+            associated_token_account(treasury, request.collateral_definition),
+            clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        signer_accounts: vec![participant],
+        instruction: CurveInstruction::SwapExactInput {
+            amount_in: request.amount_in,
+            min_amount_out: request.min_amount_out,
+            token_in: request.collateral_definition,
+        },
+    }
+}
+
 /// Builds a factory-launch sale as a neutral curve exact-input swap.
 #[must_use]
 pub fn build_sell_invocation(
@@ -536,10 +586,10 @@ mod tests {
     use pool::Pool;
 
     use super::{
-        BuyRequest, CreateSaleRequest, SellRequest, build_buy_invocation,
-        build_claim_creator_allocation_invocation, build_close_factory_pool_invocation,
-        build_create_sale_invocation, build_sell_invocation, build_update_config_invocation,
-        build_withdraw_factory_proceeds_invocation, quote_buy,
+        BuyRequest, BuyWithCollateralRequest, CreateSaleRequest, SellRequest, build_buy_invocation,
+        build_buy_with_collateral_invocation, build_claim_creator_allocation_invocation,
+        build_close_factory_pool_invocation, build_create_sale_invocation, build_sell_invocation,
+        build_update_config_invocation, build_withdraw_factory_proceeds_invocation, quote_buy,
     };
 
     const FACTORY_PROGRAM_ID: [u32; 8] = [7; 8];
@@ -733,6 +783,50 @@ mod tests {
             curve_core::Instruction::SwapExactOutput {
                 amount_out: 25,
                 max_amount_in: 100,
+                token_in,
+            } if token_in == collateral_definition
+        ));
+    }
+
+    #[test]
+    fn collateral_buy_builds_an_exact_input_swap_with_collateral_as_input() {
+        let launch_salt = [1; 32];
+        let participant = AccountId::new([9; 32]);
+        let collateral_definition = AccountId::new([5; 32]);
+        let treasury = AccountId::new([4; 32]);
+        let invocation = build_buy_with_collateral_invocation(
+            FACTORY_PROGRAM_ID,
+            CURVE_PROGRAM_ID,
+            participant,
+            treasury,
+            BuyWithCollateralRequest {
+                launch_salt,
+                collateral_definition,
+                amount_in: 25,
+                min_amount_out: 100,
+            },
+        );
+
+        let definition = compute_definition_pda(FACTORY_PROGRAM_ID, launch_salt);
+        assert_eq!(invocation.program_id, CURVE_PROGRAM_ID);
+        assert_eq!(invocation.signer_accounts, vec![participant]);
+        assert_eq!(
+            invocation.account_ids[3],
+            super::associated_token_account(participant, collateral_definition)
+        );
+        assert_eq!(
+            invocation.account_ids[6],
+            super::associated_token_account(participant, definition)
+        );
+        assert_eq!(
+            invocation.account_ids[7],
+            super::associated_token_account(treasury, collateral_definition)
+        );
+        assert!(matches!(
+            invocation.instruction,
+            curve_core::Instruction::SwapExactInput {
+                amount_in: 25,
+                min_amount_out: 100,
                 token_in,
             } if token_in == collateral_definition
         ));

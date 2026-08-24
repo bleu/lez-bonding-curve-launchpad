@@ -93,12 +93,35 @@ pub struct SwapOutcome {
 pub enum SwapError {
     Closed,
     ZeroAmount,
+    /// A non-zero input would produce no output after conservative integer rounding.
+    /// Rejecting this avoids accepting a value-destructive no-op trade.
+    OutputTooSmall,
     FeeAboveDenominator,
     InputConsumedByFees,
     Arithmetic,
     SlippageExceeded,
     InsufficientRealOutputReserve,
 }
+
+impl std::fmt::Display for SwapError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let message = match self {
+            Self::Closed => "the pool is closed",
+            Self::ZeroAmount => "swap input or requested output must be non-zero",
+            Self::OutputTooSmall => "the input is too small to produce one output unit",
+            Self::FeeAboveDenominator => "combined fees exceed 10,000 basis points",
+            Self::InputConsumedByFees => "fees consume the entire input amount",
+            Self::Arithmetic => "the swap would overflow the supported arithmetic range",
+            Self::SlippageExceeded => "the swap would exceed its slippage limit",
+            Self::InsufficientRealOutputReserve => {
+                "the pool lacks the real reserve for this output"
+            }
+        };
+        f.write_str(message)
+    }
+}
+
+impl std::error::Error for SwapError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WithdrawError {
@@ -173,6 +196,9 @@ impl Pool {
             effective_input,
         )
         .map_err(|_| SwapError::Arithmetic)?;
+        if amount_out == 0 {
+            return Err(SwapError::OutputTooSmall);
+        }
         if amount_out < min_amount_out {
             return Err(SwapError::SlippageExceeded);
         }
@@ -619,6 +645,18 @@ mod tests {
             PoolLifecycle::Open,
             "unconfigured depletion must not close the pool"
         );
+    }
+
+    #[test]
+    fn exact_input_rejects_a_nonzero_trade_that_rounds_to_zero_output() {
+        let mut pool = Pool::create(800, 100, 1_000, 1_000, None, None).expect("valid pool");
+        let before = pool.clone();
+
+        assert_eq!(
+            pool.swap_exact_input(TokenSide::Token0, 1, 0, 0, 0, 1),
+            Err(SwapError::OutputTooSmall)
+        );
+        assert_eq!(pool, before, "a rejected dust trade must be atomic");
     }
 
     #[test]

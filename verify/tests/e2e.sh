@@ -82,8 +82,8 @@ chmod +x "$tmp_dir/bin/lgs"
 cat >"$tmp_dir/bin/find" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
-  *curve.bin*) printf '%s\n' 'target/curve.bin' ;;
-  *factory.bin*) printf '%s\n' 'target/factory.bin' ;;
+  *curve.bin*) printf '%s\n' 'methods/target/curve.bin' ;;
+  *factory.bin*) printf '%s\n' 'methods/target/factory.bin' ;;
   *) exit 0 ;;
 esac
 EOF
@@ -105,7 +105,7 @@ case "$*" in
     printf '%s\n' '{"status":"error","error":{"category":"collateral_reserve_overshoot"}}'
     exit 1
     ;;
-  *' price '*) printf '%s\n' '{"amount_in":100}' ;;
+  *' price '*) printf '%s\n' '{"amount_in":100,"amount_out":200}' ;;
   *' status '*)
     count=$(cat "$E2E_STATUS_COUNT")
     count=$((count + 1))
@@ -116,7 +116,7 @@ case "$*" in
       printf '%s\n' '{"real_token_reserve":0,"status":"closed"}'
     fi
     ;;
-  *' configure '*|*' buy '*|*' sell '*|*' unlock '*|*' withdraw '*)
+  *' configure '*|*' buy '*|*' buy-with-collateral '*|*' sell '*|*' unlock '*|*' withdraw '*)
     printf '%s\n' '{"status":"submitted","transaction_hash":"test"}'
     ;;
   *) printf '%s\n' '{"launch_salt":"0000000000000000000000000000000000000000000000000000000000000001"}' ;;
@@ -131,6 +131,7 @@ if ! E2E_COMMAND_LOG="$log_file" E2E_RESET_COMPLETE="$tmp_dir/reset" \
   E2E_ACCOUNT_COUNT="$tmp_dir/account-count" E2E_STATUS_COUNT="$tmp_dir/status-count" \
   GENESIS_ADMIN_ACCOUNT=admin PATH="$tmp_dir/bin:$PATH" \
   "$e2e_script" >"$tmp_dir/stdout" 2>"$tmp_dir/stderr"; then
+  cat "$tmp_dir/stderr" >&2
   fail "the managed localnet walkthrough should complete with the mocked live chain"
 fi
 
@@ -142,10 +143,12 @@ rg -q -- '--json create-sale' "$log_file" \
   || fail "the walkthrough must create the fixture through launchpad JSON output"
 rg -q -- '--creator Public/admin' "$log_file" \
   || fail "the walkthrough must pass the creator account to create-sale"
-rg -q -- '--factory-program-path target/factory.bin' "$log_file" \
-  || fail "the walkthrough must pass the factory binary to create-sale"
-rg -q -- '--curve-program-path target/curve.bin' "$log_file" \
-  || fail "the walkthrough must pass the curve binary to create-sale"
+rg -q -- '--factory-program-path methods/target/factory.bin' "$log_file" \
+  || fail "the walkthrough must pass the discovered factory binary to create-sale"
+rg -q -- '--curve-program-path methods/target/curve.bin' "$log_file" \
+  || fail "the walkthrough must pass the discovered curve binary to create-sale"
+rg -q -- '--json buy-with-collateral' "$log_file" \
+  || fail "the walkthrough must exercise the collateral-input purchase path"
 
 printf 'ok: managed localnet is reset and stopped\n'
 
