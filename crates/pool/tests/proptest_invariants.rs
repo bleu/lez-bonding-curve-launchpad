@@ -133,20 +133,36 @@ fn reserves(pool: &Pool, side: TokenSide) -> (u128, u128, u128, u128) {
 fn assert_successful_swap(before: &Pool, after: &Pool, side: TokenSide, outcome: SwapOutcome) {
     let (old_virtual_in, old_virtual_out, old_real_in, old_real_out) = reserves(before, side);
     let (new_virtual_in, new_virtual_out, new_real_in, new_real_out) = reserves(after, side);
-    let retained_input = checked_add(outcome.effective_amount_in, outcome.pool_fee);
-
     assert!(outcome.amount_in > 0);
+    if outcome.protocol_fee_on_output {
+        assert_eq!(outcome.amount_in, outcome.effective_amount_in);
+        assert_eq!(
+            outcome.raw_amount_out,
+            checked_add(outcome.amount_out, outcome.protocol_fee)
+        );
+    } else {
+        assert_eq!(
+            outcome.amount_in,
+            checked_add(outcome.effective_amount_in, outcome.protocol_fee)
+        );
+        assert_eq!(outcome.raw_amount_out, outcome.amount_out);
+    }
     assert_eq!(
-        outcome.amount_in,
-        checked_add(retained_input, outcome.protocol_fee)
+        new_virtual_in,
+        checked_add(old_virtual_in, outcome.effective_amount_in)
     );
-    assert_eq!(new_virtual_in, checked_add(old_virtual_in, retained_input));
     assert_eq!(
-        checked_add(new_virtual_out, outcome.amount_out),
+        checked_add(new_virtual_out, outcome.raw_amount_out),
         old_virtual_out
     );
-    assert_eq!(new_real_in, checked_add(old_real_in, retained_input));
-    assert_eq!(checked_add(new_real_out, outcome.amount_out), old_real_out);
+    assert_eq!(
+        new_real_in,
+        checked_add(old_real_in, outcome.effective_amount_in)
+    );
+    assert_eq!(
+        checked_add(new_real_out, outcome.raw_amount_out),
+        old_real_out
+    );
     assert_eq!(after.k, before.k);
 
     // The price source is the immutable creation-time invariant. Live virtual
@@ -155,15 +171,15 @@ fn assert_successful_swap(before: &Pool, after: &Pool, side: TokenSide, outcome:
 }
 
 #[test]
-fn combined_fee_rounds_once_and_splits_deterministically() {
+fn collateral_buy_fee_rounds_up_before_pricing() {
     let mut pool = Pool::create(800, 800, 1_000, 1_000, None, None).expect("valid pool");
     let outcome = pool
-        .swap_exact_input(TokenSide::Token0, 101, 0, 100, 100, 0)
+        .swap_exact_input(TokenSide::Token1, 101, 0, 0, 100, 0)
         .expect("swap succeeds");
 
-    assert_eq!(outcome.effective_amount_in, 98);
-    assert_eq!(outcome.protocol_fee, 1);
-    assert_eq!(outcome.pool_fee, 2);
+    assert_eq!(outcome.effective_amount_in, 99);
+    assert_eq!(outcome.protocol_fee, 2);
+    assert!(!outcome.protocol_fee_on_output);
 }
 
 #[test]

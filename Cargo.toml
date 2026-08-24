@@ -8,6 +8,7 @@ members = [
     "crates/factory-core",
     "crates/launchpad-client",
     "crates/pool",
+    "crates/private-flow-core",
     "cli",
 ]
 exclude = ["methods", "methods/guest"]
@@ -33,6 +34,7 @@ pool = { path = "crates/pool" }
 curve-core = { path = "crates/curve-core" }
 factory-core = { path = "crates/factory-core" }
 launchpad-client = { path = "crates/launchpad-client" }
+private-flow-core = { path = "crates/private-flow-core" }
 
 anyhow = "1"
 borsh = { version = "1.8", features = ["derive"] }

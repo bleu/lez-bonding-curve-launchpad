@@ -1,51 +1,34 @@
-# 0005 — Dual input fees with an immutable pricing invariant
+# 0005 — Collateral-only protocol fees with an immutable pricing invariant
 
 Status: accepted
 
 ## Context
 
-The GTM-514 solvency review introduced a retained pool fee alongside the protocol
-fee. The RFP has higher authority than that review on curve semantics: pricing must
-use the creation-time constant product `k`, not a product recomputed from rounded
-live reserves.
+RFP-015 gives the protocol fee a precise asset rule: it is always collateral,
+not a retained AMM fee and not the launch token. The earlier dual-input fee model
+conflicted with that higher-authority requirement.
 
-Charging and rounding pool and protocol fees independently would overcharge small
-trades. Fees also need one direction-independent rule: both buys and sells charge in
-the input asset.
+Pricing still uses the creation-time constant product `k`; rounded live reserves
+are accounting state, not a new pricing invariant.
 
 ## Decision
 
-`Config` stores `pool_fee_bps` and `protocol_fee_bps`. Their sum must not exceed
-10,000. Both are read live by each trade.
+`Config` stores only `protocol_fee_bps` and the treasury owner. The rate is live
+for every swap and must be at most 10,000 basis points.
 
-For a gross input and combined rate, the state machine:
+| Trade | Fee | Curve input | Trader receives | Treasury receives |
+| --- | --- | --- | --- | --- |
+| Buy (token1/collateral in) | `ceil(collateral_in × rate)` | `collateral_in - fee` | quoted launch tokens | collateral fee |
+| Sell (token0/launch token in) | `ceil(raw_collateral_out × rate)` | launch tokens | `raw_collateral_out - fee` | collateral fee |
 
-1. Computes the combined fee once, rounded up.
-2. Assigns the protocol share as
-   `floor(combined_fee * protocol_fee_bps / total_fee_bps)`.
-3. Assigns the remainder to the pool fee.
-4. Prices with the effective input after the combined fee.
-5. Adds the pool fee to the matching virtual and real pool reserve; the protocol
-   fee leaves for the treasury.
-
-The proportional floor gives a deterministic split, preserves the exact combined
-fee, and gives any indivisible remainder to the pool rather than charging another
-unit. The rule is direction-neutral: token0 or token1 can be input, and handlers
-send the protocol fee to the treasury holding for that input token.
-
-Pricing always uses stored creation-time `k`. Live reserves are updated with checked
-addition/subtraction, but their product is not recalculated for later quotes and is
-not a required `u128` intermediate. Accepted trades retain immutable `k`.
-
-Outputs still round down, exact-output inputs round up, and the combined fee rounds
-up. Zero inputs and zero requested outputs reject before quoting.
+There is no retained pool fee. A buy's `max_amount_in` is the gross collateral
+debit. Exact-output swaps are buys only; exact-input supports both directions.
+Each fee transfer is a chained ATA call in the same curve transaction as the
+pool reserve movement and trader payout.
 
 ## Consequences
 
-This amends ADR 0003: its single fee, collateral-only treasury holding, and fee
-round-down rules no longer apply. It preserves ADR 0004's creation bounds and
-checked arithmetic, and restores its creation-time `k` as the pricing source.
-
-The config and `UpdateConfig` wire formats now carry two fee rates. This change lands
-before deployment, so no on-chain migration is required for the proof of concept.
-GTM-514's chain-free property suite is the executable obligation for these rules.
+The treasury ATA switches with settlement direction only in account position, not
+in asset: it is always the collateral ATA. Sell reserve accounting removes the
+raw collateral output, including the part delivered to treasury. Tests cover both
+directions, ceiling rounding, transaction wiring, and state-machine conservation.

@@ -1,0 +1,325 @@
+{
+  "version": "0.1.0",
+  "name": "factory",
+  "instructions": [
+    {
+      "name": "create_factory_pool",
+      "accounts": [
+        {
+          "name": "factory",
+          "writable": true,
+          "signer": false,
+          "init": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": "factory"
+              },
+              {
+                "kind": "arg",
+                "path": "launch_salt"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_definition",
+          "writable": true,
+          "signer": false,
+          "init": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": "definition"
+              },
+              {
+                "kind": "arg",
+                "path": "launch_salt"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint",
+          "writable": true,
+          "signer": false,
+          "init": true
+        },
+        {
+          "name": "metadata",
+          "writable": true,
+          "signer": false,
+          "init": true
+        },
+        {
+          "name": "creator_escrow",
+          "writable": true,
+          "signer": false,
+          "init": true
+        },
+        {
+          "name": "creator",
+          "writable": false,
+          "signer": true,
+          "init": false
+        },
+        {
+          "name": "creator_token_ata",
+          "writable": true,
+          "signer": false,
+          "init": true
+        },
+        {
+          "name": "collateral_definition",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "factory_token_ata",
+          "writable": true,
+          "signer": false,
+          "init": true
+        },
+        {
+          "name": "factory_collateral_ata",
+          "writable": true,
+          "signer": false,
+          "init": true
+        },
+        {
+          "name": "pool",
+          "writable": true,
+          "signer": false,
+          "init": true
+        },
+        {
+          "name": "pool_token_ata",
+          "writable": true,
+          "signer": false,
+          "init": true
+        },
+        {
+          "name": "pool_collateral_ata",
+          "writable": true,
+          "signer": false,
+          "init": true
+        },
+        {
+          "name": "clock",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "launch_salt",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "uri",
+          "type": "string"
+        },
+        {
+          "name": "sale_reserve",
+          "type": "u128"
+        },
+        {
+          "name": "dex_seed_reserve",
+          "type": "u128"
+        },
+        {
+          "name": "creator_allocation",
+          "type": "u128"
+        },
+        {
+          "name": "virtual_token_reserve",
+          "type": "u128"
+        },
+        {
+          "name": "virtual_collateral_reserve",
+          "type": "u128"
+        },
+        {
+          "name": "end_timestamp",
+          "type": {
+            "option": "u64"
+          }
+        },
+        {
+          "name": "curve_program_id",
+          "type": "program_id"
+        }
+      ]
+    },
+    {
+      "name": "close_factory_pool",
+      "accounts": [
+        {
+          "name": "factory",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "pool",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "creator",
+          "writable": false,
+          "signer": true,
+          "init": false
+        },
+        {
+          "name": "clock",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "claim_creator_allocation",
+      "accounts": [
+        {
+          "name": "factory",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "pool",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "creator_escrow",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "creator",
+          "writable": false,
+          "signer": true,
+          "init": false
+        },
+        {
+          "name": "token_definition",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "creator_token_ata",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "clock",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "withdraw_factory_proceeds",
+      "accounts": [
+        {
+          "name": "factory",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "pool",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "creator",
+          "writable": false,
+          "signer": true,
+          "init": false
+        },
+        {
+          "name": "token_definition",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "collateral_definition",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "factory_token_ata",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "factory_collateral_ata",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "pool_token_ata",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "pool_collateral_ata",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "creator_token_ata",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "creator_collateral_ata",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "clock",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": []
+    }
+  ],
+  "instruction_type": "factory_core::Instruction"
+}

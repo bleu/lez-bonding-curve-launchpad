@@ -22,7 +22,7 @@ The curve program is a neutral bounded AMM. A token launch is a factory policy l
 - Withdrawal — owner-only transfer of both complete remaining real reserves after manual close or expiry. It permanently retires the pool.
 - Treasury — the configured owner of protocol-fee ATAs.
 - Admin authority — the key allowed to update both fee rates and the treasury address.
-- Config — the singleton PDA holding pool and protocol fee rates, treasury owner, and admin key. Created and replaced whole by `update_config`; read live by every swap. See `docs/adr/0003` and `docs/adr/0005`.
+- Config — the singleton PDA holding the collateral-only protocol fee rate, treasury owner, and admin key. Created and replaced whole by `update_config`; read live by every swap. See `docs/adr/0003` and `docs/adr/0005`.
 - Genesis admin — the admin key compiled into `curve-core`, gating only the config's first write. It is part of the risc0 image ID.
 - ATA — an associated token account derived from an owner and token definition. Pool reserves are ATAs owned by the pool PDA.
 - Factory — the launch adapter. It mints a fixed supply, owns launch vocabulary and allocation policy, retains any DEX-seed allocation, and deposits only tradeable amounts into the pool.

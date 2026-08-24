@@ -28,6 +28,7 @@ For smaller checks or troubleshooting:
 cargo test --workspace
 ./verify/tests/e2e.sh    # validates walkthrough control flow with mocked commands
 ./verify/check-pins.sh   # checks the duplicated LEZ/scaffold pins
+./verify/check-idl.sh    # proves checked-in SPEL IDLs match their source declarations
 lgs build                # builds host workspace and RISC0 guest binaries
 ```
 
@@ -44,7 +45,7 @@ Nix is not required. Scaffold needs it only for `lgs basecamp`, which is outside
 
 At creation, [`Pool::create`](crates/pool/src/lib.rs) rejects zero virtual reserves and either virtual reserve at or above `2^64`. Thus the immutable creation-time `k = V0 × V1` is strictly below `2^128` and fits `u128`. Trades use that stored `k` for every quote, while reserve additions/subtractions and all quote arithmetic remain checked. A trade that would overflow or leave its real output reserve rejects before state mutation. The complete argument is in [ADR 0004](docs/adr/0004-u128-bounds-for-the-curve-arithmetic.md).
 
-Quotes use the immutable creation-time `k`, as RFP-015 specifies. Exact-input output uses ceiling division internally so the payout rounds down; exact-output pricing rounds required input up. The combined input fee rounds up, is split deterministically, and the retained pool portion stays in the matching real and virtual reserve; the protocol portion is sent to the configured treasury ATA. See [`curve-math`](crates/curve-math/src/lib.rs), [`pool`](crates/pool/src/lib.rs), and [ADR 0005](docs/adr/0005-dual-input-fees-and-monotonic-reserve-product.md).
+Quotes use the immutable creation-time `k`, as RFP-015 specifies. Exact-input output uses ceiling division internally so the payout rounds down; exact-output pricing rounds required input up. The only fee is the protocol fee, rounded up and always settled in collateral: it is deducted from collateral input on buys and from raw collateral output on sells. The pool receives no retained fee. See [`curve-math`](crates/curve-math/src/lib.rs), [`pool`](crates/pool/src/lib.rs), and [ADR 0005](docs/adr/0005-dual-input-fees-and-monotonic-reserve-product.md).
 
 The executable property suite in [`crates/pool/tests/proptest_invariants.rs`](crates/pool/tests/proptest_invariants.rs) generates 512 randomized sequences of up to 128 exact-input/exact-output swaps, close attempts, and withdrawals across both token directions, boundary amounts, and valid/invalid fee combinations. It asserts successful swaps conserve the modeled real reserves, never pay beyond the selected real output reserve, and retain the immutable pricing `k`; rejected actions leave state unchanged. It is a pure state-machine test—not a proof of LEZ account/ATA wiring, concurrent sequencer execution, private-flow behavior, or a mathematical proof over all inputs. Adapter tests in [`curve-core`](crates/curve-core/src/tests.rs) cover the account, authorization, and custody boundary.
 
@@ -65,17 +66,17 @@ this PoC or explicitly deferred.
 
 | RFP-015 requirement | Implementation location | Verification evidence | Status |
 | --- | --- | --- | --- |
-| F1: deterministic two-way curve, integer pricing, reserve backing, inverse quote | `crates/curve-math`, `crates/pool`, `crates/launchpad-client` | math, unit, quote, and 512-case state-machine property tests | **implemented and test-covered**, except collateral-only fee semantics |
+| F1: deterministic two-way curve, integer pricing, reserve backing, inverse quote | `crates/curve-math`, `crates/pool`, `crates/curve-core`, `crates/launchpad-client` | math, buy/sell collateral-fee unit tests, dispatcher settlement tests, quote tests, and 512-case state-machine property tests | **implemented and test-covered** |
 | F2: creator-defined `D`, optional `R`, virtual reserves, distinct allocations | `crates/factory-core`, factory `CreateFactoryPool` | factory tests cover fixed supply and reject `Vt <= D` | **implemented and test-covered** |
-| F3: public and deshield→trade→re-shield participation | public CLI/client in `launchpad-client`; privacy boundary in [ADR 0005](docs/adr/0005-private-trade-boundary-and-verification.md) | public invocation tests; private entry point fail-closes before any funding | **not covered** for the required private path |
+| F3: public and deshield→trade→re-shield participation | `private-flow-core`, `methods/guest/src/bin/private_buy.rs`, `launchpad-client`, CLI | guest compile check; client/CLI validation tests; router chains native funding, collateral deshield, buy, and re-shield in one private transaction | **implemented and statically test-covered**; no live sequencer evidence claimed |
 | F4: automatic close when sale reserve exhausts | factory token0 depletion policy; `Pool::close_if_depleted` | pool/factory lifecycle tests | **implemented and test-covered** |
 | F5: post-close collateral and `R` settlement | `WithdrawFactoryProceeds` in `factory-core` | factory chained-call tests | **implemented and test-covered** |
 | F6: buy/sell slippage protection | exact-output/input pool operations and CLI caps/floors | unit, client, and CLI parsing tests | **implemented and test-covered** |
 | F7: ATA custody | `curve-core` create/swap/lifecycle adapters | adapter tests verify ATA derivation and settlement accounts | **implemented and test-covered** |
-| U01: SDK lifecycle for public and private users | `launchpad-client` | public invocation/quote tests; private lifecycle fail-closes | **implemented and test-covered** for public operations; private lifecycle is **not covered** |
+| U01: SDK lifecycle for public and private users | `launchpad-client` | public invocation/quote tests; private request validation and router composition compile check | **implemented and test-covered** at the SDK/guest construction boundary |
 | U02, U04–U08: mini-app, confirmation, privacy UX, analytics | — | — | **not covered** |
 | U03: essential creator/participant CLI | `cli/src/main.rs` | CLI parsing tests for `configure`, `create-sale`, `price`, `buy`, `buy-with-collateral`, `sell`, `status`, `unlock`, and `withdraw`; status reports configured sale quantity, tokens sold, and reserves | **implemented and test-covered** |
-| U09: SPEL-generated IDL | — | — | **not covered**; this raw LEZ template deliberately has no framework IDL ([ADR 0002](docs/adr/0002-repo-layout-and-guest-shim.md)) |
+| U09: SPEL-generated IDL | `idl-src/`, `idl/`, `verify/check-idl.sh` | project-pinned `spel generate-idl` reproduces all three checked-in JSON interfaces | **implemented and test-covered** |
 | U10: actionable rejected-buy errors | CLI JSON error categories and pool errors | CLI and pool error tests | **implemented and test-covered** |
 | R1–R2: concurrent-safe invariant/accounting and atomic failed buy | checked state transitions; curve account adapters | property suite checks rejected transition atomicity; adapter tests | **implemented and test-covered** at the state-machine boundary, not under adversarial concurrent submissions |
 | R3: atomic auto-close, no later buy | factory closure policy | pool/factory lifecycle tests | **implemented and test-covered** |
@@ -85,7 +86,7 @@ this PoC or explicitly deferred.
 | S2: sequencer E2E in CI | `verify/e2e.sh`, `verify/tests/e2e.sh` | mocked control-flow test exists; current CI runs unit tests and pin checks, not a live sequencer | **implemented but not demonstrated** in CI |
 | S3: test per hard requirement | tests across crates and `verify/` | mapping above identifies unimplemented/private/UI/performance gaps | **not covered** as a complete RFP claim |
 | S4: README deployment and end-to-end use | this README and `verify/e2e.sh` | canonical command and mocked harness control-flow test | **implemented and test-covered**; live execution excluded from this review |
-| S5 and Privacy requirements: full private-flow guarantees and privacy document | [ADR 0005](docs/adr/0005-private-trade-boundary-and-verification.md) | documents the boundary and acceptance criteria only | **not covered** |
+| S5 and Privacy requirements: atomic private-flow construction and privacy document | [ADR 0005](docs/adr/0005-private-trade-boundary-and-verification.md), private router | guest compile check plus documented public-observability boundary | **implemented and statically test-covered**; live privacy validation is outside this PoC review |
 
 ### Platform-dependency evidence
 
@@ -95,9 +96,8 @@ General cross-program calls are exercised by the factory/curve flow. The RFP-001
 
 ## Scope limits
 
-- This PoC has no mini-app, generated IDL, testnet/mainnet deployment, CU measurements, or automatic DEX graduation.
-- Private trades are a documented SDK responsibility and acceptance target, not a demonstrated feature. The privacy goal is anonymous participation—not confidential trade amounts: reserves, pricing, fees, and public state transitions remain visible.
-- The production RFP's collateral-only protocol-fee rule is not the policy implemented by this neutral AMM: it supports dual input-token fees. This is an intentional PoC interface decision documented in ADR 0005 and must be reconciled before claiming full RFP conformance.
+- This PoC has no mini-app, testnet/mainnet deployment, CU measurements, or automatic DEX graduation.
+- Private buys are constructed as one privacy-preserving transaction, but this review deliberately does not treat a local or live submission as evidence. The privacy goal is anonymous participation—not confidential trade amounts: reserves, pricing, fees, and public state transitions remain visible.
 - Development proving mode means this repository must not be used as evidence of production proof performance or production security.
 
 ## Privacy boundary
@@ -108,11 +108,19 @@ its reserves, price movement, fees, and token-account changes are public. Those
 public changes can reveal or constrain a trade's effective size. The program
 does not and must not claim otherwise.
 
-The SDK owns the private trade lifecycle: it assembles the guest binaries needed
-to prove the main call and every chained call, submits the private transaction,
-syncs the private account, and re-shields received assets where applicable. The
-program cannot enforce that last step. The implementation and acceptance checks
-for that lifecycle are recorded in [ADR 0005](docs/adr/0005-private-trade-boundary-and-verification.md).
+The SDK owns the private-buy lifecycle. It creates a fresh public account, proves
+one router transaction with the curve, native-transfer, token, and ATA guest
+dependencies, then chains native funding, collateral deshielding, the buy, and
+re-shielding the purchased tokens to the caller's private destination. The router
+fixes that order; callers cannot submit a partial version through this API. The
+implementation and limits are recorded in [ADR 0005](docs/adr/0005-private-trade-boundary-and-verification.md).
+
+## SPEL IDL
+
+The hand-written guests retain their shared Rust instruction enums. Their SPEL
+interface declarations live in [`idl-src`](idl-src), and generated JSON is checked
+into [`idl`](idl). Regenerate it with `./verify/generate-idl.sh`; CI/review can
+verify it has not drifted with `./verify/check-idl.sh`.
 
 ## Layout
 
@@ -131,7 +139,7 @@ Handlers live in the host workspace under `crates/`, and each risc0 guest in `me
 
 ## Admin authority
 
-The pool and protocol fee rates and the treasury owner live in a singleton config PDA, read live by every swap. One instruction manages it: `update_config` creates the config on the first call and replaces it whole after, gated on the admin key. The first call must be signed by the genesis admin, a constant compiled into `curve-core`. Replace it with your key before the deploy build; it is part of the risc0 image ID, so changing it produces a different program. Deployment then has one required step: call `update_config` once before any swap, because swaps fail while the config does not exist.
+The protocol fee rate and the treasury owner live in a singleton config PDA, read live by every swap. One instruction manages it: `update_config` creates the config on the first call and replaces it whole after, gated on the admin key. The first call must be signed by the genesis admin, a constant compiled into `curve-core`. Replace it with your key before the deploy build; it is part of the risc0 image ID, so changing it produces a different program. Deployment then has one required step: call `update_config` once before any swap, because swaps fail while the config does not exist.
 
 RFP-015 sources the admin authority from the RFP-001 library, which this proof of concept does not build. The seam it plugs into is the admin field itself: rotate the admin to the key that library controls and it holds the gate from then on, with no code change and no redeploy. Rotation is single-step, so a rotation to a wrong key is unrecoverable — check the key before you sign.
 
