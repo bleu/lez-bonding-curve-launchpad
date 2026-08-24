@@ -797,6 +797,18 @@ fn token0_to_token1_exact_input_settles_all_three_transfers() {
         (1048, 81)
     );
     assert_eq!(calls.len(), 3, "input, protocol fee, and output transfers");
+    for call in &calls {
+        assert_eq!(call.program_id, ATA_PROGRAM_ID);
+    }
+    assert!(
+        calls[2].pre_states[0].is_authorized,
+        "the pool must authorize the output transfer"
+    );
+    assert_eq!(
+        calls[2].pda_seeds,
+        vec![crate::compute_pool_pda_seed(token0, token1, owner)],
+        "the pool must prove its PDA authority for the output transfer"
+    );
     let transfers: Vec<(AccountId, AccountId, AccountId, u128)> = calls
         .iter()
         .map(|call| {
