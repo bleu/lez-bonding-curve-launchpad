@@ -742,7 +742,7 @@ fn exact_input_handler_selects_direction_and_pairs_the_fee_with_token_in() {
 }
 
 #[test]
-fn exact_input_dispatch_settles_the_gross_input_fee_and_output_atomically() {
+fn token0_to_token1_exact_input_settles_all_three_transfers() {
     let owner = AccountId::new([3; 32]);
     let participant = AccountId::new([4; 32]);
     let token0 = AccountId::new([1; 32]);
@@ -797,32 +797,44 @@ fn exact_input_dispatch_settles_the_gross_input_fee_and_output_atomically() {
         (1048, 81)
     );
     assert_eq!(calls.len(), 3, "input, protocol fee, and output transfers");
-    let amounts: Vec<u128> = calls
+    let transfers: Vec<(AccountId, AccountId, AccountId, u128)> = calls
         .iter()
         .map(|call| {
             let instruction: AtaInstruction = risc0_zkvm::serde::from_slice(&call.instruction_data)
                 .expect("ATA instruction parses");
-            match instruction {
-                AtaInstruction::Transfer { amount, .. } => amount,
-                _ => panic!("swap settlement contains only transfers"),
-            }
+            let AtaInstruction::Transfer { amount, .. } = instruction else {
+                panic!("swap settlement contains only transfers");
+            };
+            (
+                call.pre_states[0].account_id,
+                call.pre_states[1].account_id,
+                call.pre_states[2].account_id,
+                amount,
+            )
         })
         .collect();
-    assert_eq!(amounts, vec![248, 2, 19]);
-    assert_eq!(calls[0].pre_states[0].account_id, participant);
     assert_eq!(
-        calls[0].pre_states[1].account_id,
-        participant_token0.account_id
-    );
-    assert_eq!(calls[0].pre_states[2].account_id, pool_token0.account_id);
-    assert_eq!(
-        calls[1].pre_states[2].account_id,
-        treasury_token0.account_id
-    );
-    assert_eq!(calls[2].pre_states[0].account_id, pool_id);
-    assert_eq!(
-        calls[2].pre_states[2].account_id,
-        participant_token1.account_id
+        transfers,
+        vec![
+            (
+                participant,
+                participant_token0.account_id,
+                pool_token0.account_id,
+                248
+            ),
+            (
+                participant,
+                participant_token0.account_id,
+                treasury_token0.account_id,
+                2,
+            ),
+            (
+                pool_id,
+                pool_token1.account_id,
+                participant_token1.account_id,
+                19
+            ),
+        ]
     );
 }
 
