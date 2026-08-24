@@ -274,6 +274,8 @@ struct SaleSnapshot {
     collateral_definition: String,
     status: &'static str,
     creator_allocation_claimed: bool,
+    sale_quantity: u128,
+    tokens_sold: u128,
     real_token_reserve: u128,
     real_collateral_reserve: u128,
     virtual_token_reserve: u128,
@@ -466,6 +468,10 @@ async fn sale_snapshot(json: bool, args: LaunchReadArgs) -> Result<()> {
         pool::PoolLifecycle::Closed => "closed",
         pool::PoolLifecycle::Withdrawn => "withdrawn",
     };
+    let tokens_sold = factory
+        .sale_reserve
+        .checked_sub(pool.pool.real_reserve0)
+        .context("factory pool token reserve exceeds its configured sale quantity")?;
     let snapshot = SaleSnapshot {
         launch_salt: hex::encode(args.launch.launch_salt),
         factory_program: factory_program
@@ -478,6 +484,8 @@ async fn sale_snapshot(json: bool, args: LaunchReadArgs) -> Result<()> {
         collateral_definition: factory.collateral_definition_id.to_string(),
         status,
         creator_allocation_claimed: factory.creator_allocation_claimed,
+        sale_quantity: factory.sale_reserve,
+        tokens_sold,
         real_token_reserve: pool.pool.real_reserve0,
         real_collateral_reserve: pool.pool.real_reserve1,
         virtual_token_reserve: pool.pool.virtual_reserve0,
@@ -488,8 +496,12 @@ async fn sale_snapshot(json: bool, args: LaunchReadArgs) -> Result<()> {
         println!("{}", serde_json::to_string(&snapshot)?);
     } else {
         println!(
-            "sale {status}: pool={} token_reserve={} collateral_reserve={}",
-            snapshot.pool, snapshot.real_token_reserve, snapshot.real_collateral_reserve
+            "sale {status}: pool={} sold={}/{} token_reserve={} collateral_reserve={}",
+            snapshot.pool,
+            snapshot.tokens_sold,
+            snapshot.sale_quantity,
+            snapshot.real_token_reserve,
+            snapshot.real_collateral_reserve
         );
     }
     Ok(())

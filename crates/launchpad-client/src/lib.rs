@@ -211,6 +211,12 @@ pub fn build_create_sale_invocation(
     creator: AccountId,
     request: CreateSaleRequest,
 ) -> Result<PublicInvocation<FactoryInstruction>> {
+    factory_core::validate_curve_parameters(
+        request.sale_reserve,
+        request.virtual_token_reserve,
+        request.virtual_collateral_reserve,
+    )
+    .map_err(|error| anyhow!("invalid factory curve parameters: {error}"))?;
     let (factory, token_definition, pool) = factory_pool_addresses(
         factory_program_id,
         curve_program_id,
@@ -636,6 +642,30 @@ mod tests {
         );
         assert_eq!(invocation.account_ids.len(), 14);
         assert_eq!(invocation.account_ids[7], collateral_definition);
+    }
+
+    #[test]
+    fn factory_launch_rejects_a_virtual_token_reserve_at_the_sale_target() {
+        let error = build_create_sale_invocation(
+            FACTORY_PROGRAM_ID,
+            CURVE_PROGRAM_ID,
+            AccountId::new([9; 32]),
+            CreateSaleRequest {
+                launch_salt: [1; 32],
+                name: "E2E token".into(),
+                uri: "https://example.invalid/e2e-token.json".into(),
+                sale_reserve: 800,
+                dex_seed_reserve: 100,
+                creator_allocation: 50,
+                virtual_token_reserve: 800,
+                virtual_collateral_reserve: 100,
+                end_timestamp: None,
+                collateral_definition: AccountId::new([5; 32]),
+            },
+        )
+        .expect_err("a curve must not reach its asymptote at the sale target");
+
+        assert!(error.to_string().contains("must exceed"));
     }
 
     #[test]

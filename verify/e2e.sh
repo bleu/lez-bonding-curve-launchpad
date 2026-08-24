@@ -274,6 +274,12 @@ before_terminal=$(run_launchpad_json "terminal status" status \
   --curve-program-path "$curve_program_path")
 remaining=$(jq -er '.real_token_reserve' <<<"$before_terminal")
 [[ "$remaining" != 0 ]] || fail "sale closed before the terminal buy"
+jq -e '
+  (.sale_quantity | type == "number" and . > 0)
+  and (.tokens_sold | type == "number" and . >= 0)
+  and (.tokens_sold <= .sale_quantity)
+' >/dev/null <<<"$before_terminal" \
+  || fail "status must report bounded sale progress"
 terminal_quote=$(run_launchpad_json "terminal buy quote" price \
   --launch-salt "$launch_salt" \
   --collateral-definition "Public/$collateral_definition" \
@@ -299,6 +305,8 @@ after_terminal=$(run_launchpad_json "auto-close status" status \
   --curve-program-path "$curve_program_path")
 jq -e '.status == "closed"' >/dev/null <<<"$after_terminal" \
   || fail "terminal buy did not auto-close the sale"
+jq -e '.tokens_sold == .sale_quantity' >/dev/null <<<"$after_terminal" \
+  || fail "closed factory sale must report complete supply progress"
 
 unlock=$(run_launchpad_json "creator unlock" unlock \
   --launch-salt "$launch_salt" \

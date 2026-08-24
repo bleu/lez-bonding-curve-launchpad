@@ -111,9 +111,9 @@ case "$*" in
     count=$((count + 1))
     printf '%s\n' "$count" >"$E2E_STATUS_COUNT"
     if [[ "$count" -eq 1 ]]; then
-      printf '%s\n' '{"real_token_reserve":250,"status":"open"}'
+      printf '%s\n' '{"real_token_reserve":250,"sale_quantity":1000,"tokens_sold":750,"status":"open"}'
     else
-      printf '%s\n' '{"real_token_reserve":0,"status":"closed"}'
+      printf '%s\n' '{"real_token_reserve":0,"sale_quantity":1000,"tokens_sold":1000,"status":"closed"}'
     fi
     ;;
   *' configure '*|*' buy '*|*' buy-with-collateral '*|*' sell '*|*' unlock '*|*' withdraw '*)

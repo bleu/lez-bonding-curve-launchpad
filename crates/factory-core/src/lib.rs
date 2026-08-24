@@ -79,6 +79,9 @@ pub enum Instruction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CreateError {
     SaleReserveZero,
+    VirtualTokenReserveNotAboveSaleReserve,
+    VirtualReserveZero,
+    VirtualReserveAboveBound,
     SupplyOverflow,
     EmptyName,
     EmptyUri,
@@ -88,6 +91,13 @@ impl std::fmt::Display for CreateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let text = match self {
             Self::SaleReserveZero => "a factory launch needs a non-zero sale reserve",
+            Self::VirtualTokenReserveNotAboveSaleReserve => {
+                "virtual token reserve must exceed the tradeable sale reserve"
+            }
+            Self::VirtualReserveZero => "virtual reserves must be non-zero",
+            Self::VirtualReserveAboveBound => {
+                "virtual reserves must stay below 2^64 for checked curve arithmetic"
+            }
             Self::SupplyOverflow => "launch allocations exceed u128 total supply",
             Self::EmptyName => "token name must not be empty",
             Self::EmptyUri => "token metadata URI must not be empty",
@@ -109,6 +119,30 @@ pub fn total_supply(
         .checked_add(dex_seed_reserve)
         .and_then(|value| value.checked_add(creator_allocation))
         .ok_or(CreateError::SupplyOverflow)
+}
+
+/// Checks the supply-side curve condition required for a factory launch.
+///
+/// The virtual token reserve is a pricing parameter, while `sale_reserve` is
+/// real tradeable inventory. Keeping the former strictly larger ensures the
+/// curve reaches its supply target before its asymptote.
+pub fn validate_curve_parameters(
+    sale_reserve: u128,
+    virtual_token_reserve: u128,
+    virtual_collateral_reserve: u128,
+) -> Result<(), CreateError> {
+    if virtual_token_reserve <= sale_reserve {
+        return Err(CreateError::VirtualTokenReserveNotAboveSaleReserve);
+    }
+    if virtual_token_reserve == 0 || virtual_collateral_reserve == 0 {
+        return Err(CreateError::VirtualReserveZero);
+    }
+    if virtual_token_reserve >= pool::VIRTUAL_RESERVE_BOUND
+        || virtual_collateral_reserve >= pool::VIRTUAL_RESERVE_BOUND
+    {
+        return Err(CreateError::VirtualReserveAboveBound);
+    }
+    Ok(())
 }
 
 fn seed(tag: &[u8], launch_salt: [u8; 32]) -> PdaSeed {
@@ -203,6 +237,12 @@ pub fn create_factory_pool(
     assert!(!uri.is_empty(), "token metadata URI must not be empty");
     let supply = total_supply(sale_reserve, dex_seed_reserve, creator_allocation)
         .expect("launch allocations are valid");
+    validate_curve_parameters(
+        sale_reserve,
+        virtual_token_reserve,
+        virtual_collateral_reserve,
+    )
+    .expect("factory curve parameters are valid");
     assert_eq!(
         factory.account_id,
         compute_factory_pda(factory_program_id, launch_salt),
@@ -963,6 +1003,35 @@ mod tests {
     #[test]
     fn launch_requires_tradeable_supply() {
         assert_eq!(total_supply(0, 1, 1), Err(CreateError::SaleReserveZero));
+    }
+
+    #[test]
+    fn launch_requires_virtual_token_reserve_above_tradeable_supply() {
+        assert_eq!(
+            validate_curve_parameters(800, 800, 100),
+            Err(CreateError::VirtualTokenReserveNotAboveSaleReserve)
+        );
+        assert_eq!(
+            validate_curve_parameters(800, 799, 100),
+            Err(CreateError::VirtualTokenReserveNotAboveSaleReserve)
+        );
+        assert_eq!(validate_curve_parameters(800, 801, 100), Ok(()));
+    }
+
+    #[test]
+    fn launch_rejects_virtual_reserves_outside_the_curve_arithmetic_bound() {
+        assert_eq!(
+            validate_curve_parameters(800, 801, 0),
+            Err(CreateError::VirtualReserveZero)
+        );
+        assert_eq!(
+            validate_curve_parameters(800, pool::VIRTUAL_RESERVE_BOUND, 100),
+            Err(CreateError::VirtualReserveAboveBound)
+        );
+        assert_eq!(
+            validate_curve_parameters(800, 801, pool::VIRTUAL_RESERVE_BOUND),
+            Err(CreateError::VirtualReserveAboveBound)
+        );
     }
     #[test]
     fn overflow_cannot_create_an_unbacked_supply() {
