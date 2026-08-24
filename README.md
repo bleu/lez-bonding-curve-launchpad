@@ -24,6 +24,13 @@ Two program layers. The curve is a neutral bounded AMM over an ordered token pai
 
 The pool wire interface is intentionally small and breaking for this PoC: `CreatePool`, `SwapExactInput`, `SwapExactOutput`, `ClosePool`, and `WithdrawReserves`. Swaps work in either direction; `tokenIn` selects the input definition. Optional expiry uses trusted LEZ chain time, and expiry itself is sufficient to permit an owner-authorized full withdrawal.
 
+## Supply boundary
+
+A generic pool limits every payout to its real output reserve, but it cannot prevent
+an independently supplied token0 from being swapped in for token1. The launch-level
+fixed-supply claim instead depends on the factory's one-time mint and allocation
+policy; it is not enforced by the pool.
+
 Handlers live in the host workspace under `crates/`, and each risc0 guest in `methods/guest/src/bin/` is a dispatch shim over its core crate. `docs/adr/0002` explains why that differs from the in-tree programs.
 
 ## Admin authority
