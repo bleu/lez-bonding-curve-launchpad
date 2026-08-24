@@ -100,4 +100,4 @@ jq -e --arg launch_salt "$launch_salt" '.launch_salt == $launch_salt' >/dev/null
   || fail "factory launch JSON must report the fixture launch salt"
 printf 'factory launch: %s\n' "$(jq -c . <<<"$launch")"
 
-fail "remaining walkthrough steps are not implemented yet"
+fail "live transaction walkthrough requires a funded collateral definition and initialized curve config; see README.md#admin-authority"

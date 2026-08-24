@@ -82,7 +82,7 @@ chmod +x "$tmp_dir/bin/cargo"
 
 if E2E_COMMAND_LOG="$log_file" E2E_RESET_COMPLETE="$tmp_dir/reset" PATH="$tmp_dir/bin:$PATH" \
   "$e2e_script" >"$tmp_dir/stdout" 2>"$tmp_dir/stderr"; then
-  fail "the incomplete walkthrough must not report success"
+  fail "a walkthrough missing live-chain prerequisites must not report success"
 fi
 
 rg -qx 'localnet reset --yes --reset-wallet' "$log_file" \

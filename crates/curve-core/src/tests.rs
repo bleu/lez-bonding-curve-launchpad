@@ -698,6 +698,90 @@ fn expired_pool_owner_can_withdraw_both_reserves_without_closing_first() {
 }
 
 #[test]
+fn withdraw_dispatch_transfers_both_real_reserves_and_retires_the_pool() {
+    let owner = AccountId::new([3; 32]);
+    let token0 = AccountId::new([1; 32]);
+    let token1 = AccountId::new([2; 32]);
+    let pool_id = compute_pool_pda(CURVE_PROGRAM_ID, token0, token1, owner);
+    let pool = AccountWithMetadata {
+        account: Account {
+            program_owner: CURVE_PROGRAM_ID,
+            data: Data::from(&PoolAccount {
+                token0_definition_id: token0,
+                token1_definition_id: token1,
+                owner,
+                pool: Pool::create(800, 100, 1000, 100, Some(42)).expect("valid pool"),
+            }),
+            ..Account::default()
+        },
+        is_authorized: false,
+        account_id: pool_id,
+    };
+    let pool_token0 = holding_ata(pool_id, token0, 800);
+    let pool_token1 = holding_ata(pool_id, token1, 100);
+    let owner_token0 = holding_ata(owner, token0, 0);
+    let owner_token1 = holding_ata(owner, token1, 0);
+
+    let (posts, calls) = process_instruction(
+        vec![
+            pool,
+            signer(owner),
+            pool_token0.clone(),
+            pool_token1.clone(),
+            owner_token0.clone(),
+            owner_token1.clone(),
+            trusted_clock(42),
+        ],
+        Instruction::WithdrawReserves,
+        CURVE_PROGRAM_ID,
+    );
+
+    let [post]: [_; 1] = posts
+        .try_into()
+        .expect("only the pool state changes directly");
+    let retired = PoolAccount::try_from(&post.account().data).expect("valid pool state");
+    assert!(retired.pool.retired);
+    assert_eq!(
+        (retired.pool.real_reserve0, retired.pool.real_reserve1),
+        (0, 0)
+    );
+    assert_eq!(calls.len(), 2, "one transfer for each reserve");
+    let transfers: Vec<(AccountId, AccountId, AccountId, u128)> = calls
+        .iter()
+        .map(|call| {
+            let instruction: AtaInstruction = risc0_zkvm::serde::from_slice(&call.instruction_data)
+                .expect("ATA instruction parses");
+            let AtaInstruction::Transfer { amount, .. } = instruction else {
+                panic!("withdrawal contains only transfers");
+            };
+            (
+                call.pre_states[0].account_id,
+                call.pre_states[1].account_id,
+                call.pre_states[2].account_id,
+                amount,
+            )
+        })
+        .collect();
+    assert_eq!(
+        transfers,
+        vec![
+            (
+                pool_id,
+                pool_token0.account_id,
+                owner_token0.account_id,
+                800
+            ),
+            (
+                pool_id,
+                pool_token1.account_id,
+                owner_token1.account_id,
+                100
+            ),
+        ]
+    );
+}
+
+#[test]
 fn exact_input_handler_selects_direction_and_pairs_the_fee_with_token_in() {
     let owner = AccountId::new([3; 32]);
     let token0 = AccountId::new([1; 32]);
@@ -872,6 +956,106 @@ fn exact_output_handler_caps_fee_inclusive_input_in_the_reverse_direction() {
             settlement.protocol_fee,
         ),
         (28, 200, 3, 0)
+    );
+}
+
+#[test]
+fn exact_output_dispatch_settles_fee_inclusive_input_and_requested_output_atomically() {
+    let owner = AccountId::new([3; 32]);
+    let participant = AccountId::new([4; 32]);
+    let token0 = AccountId::new([1; 32]);
+    let token1 = AccountId::new([2; 32]);
+    let pool_id = compute_pool_pda(CURVE_PROGRAM_ID, token0, token1, owner);
+    let pool = AccountWithMetadata {
+        account: Account {
+            program_owner: CURVE_PROGRAM_ID,
+            data: Data::from(&PoolAccount {
+                token0_definition_id: token0,
+                token1_definition_id: token1,
+                owner,
+                pool: Pool::create(800, 100, 1000, 100, Some(42)).expect("valid pool"),
+            }),
+            ..Account::default()
+        },
+        is_authorized: false,
+        account_id: pool_id,
+    };
+    let participant_token0 = holding_ata(participant, token0, 0);
+    let participant_token1 = holding_ata(participant, token1, 1_000);
+    let pool_token0 = holding_ata(pool_id, token0, 800);
+    let pool_token1 = holding_ata(pool_id, token1, 100);
+    let treasury_token1 = ata(new_treasury(), token1, Account::default());
+    let config = AccountWithMetadata {
+        account: Account {
+            program_owner: CURVE_PROGRAM_ID,
+            data: Data::from(&Config {
+                admin: new_admin(),
+                pool_fee_bps: 1_000,
+                protocol_fee_bps: 0,
+                treasury: new_treasury(),
+            }),
+            ..Account::default()
+        },
+        is_authorized: false,
+        account_id: compute_config_pda(CURVE_PROGRAM_ID),
+    };
+
+    let (posts, calls) = process_instruction(
+        vec![
+            pool,
+            config,
+            signer(participant),
+            participant_token1.clone(),
+            pool_token1.clone(),
+            pool_token0.clone(),
+            participant_token0.clone(),
+            treasury_token1,
+            trusted_clock(41),
+        ],
+        Instruction::SwapExactOutput {
+            amount_out: 200,
+            max_amount_in: 28,
+            token_in: token1,
+        },
+        CURVE_PROGRAM_ID,
+    );
+
+    let [post]: [_; 1] = posts
+        .try_into()
+        .expect("only the pool state changes directly");
+    let updated = PoolAccount::try_from(&post.account().data).expect("valid pool state");
+    assert_eq!(
+        (updated.pool.real_reserve0, updated.pool.real_reserve1),
+        (600, 128)
+    );
+    assert_eq!(
+        calls.len(),
+        2,
+        "retained input and requested output transfers"
+    );
+    let amounts: Vec<u128> = calls
+        .iter()
+        .map(|call| {
+            let instruction: AtaInstruction = risc0_zkvm::serde::from_slice(&call.instruction_data)
+                .expect("ATA instruction parses");
+            let AtaInstruction::Transfer { amount, .. } = instruction else {
+                panic!("swap settlement contains only transfers");
+            };
+            amount
+        })
+        .collect();
+    assert_eq!(amounts, vec![28, 200]);
+    assert_eq!(calls[0].pre_states[0].account_id, participant);
+    assert_eq!(
+        calls[0].pre_states[1].account_id,
+        participant_token1.account_id
+    );
+    assert_eq!(calls[0].pre_states[2].account_id, pool_token1.account_id);
+    assert_eq!(calls[1].pre_states[0].account_id, pool_id);
+    assert_eq!(calls[1].pre_states[1].account_id, pool_token0.account_id);
+    assert_eq!(
+        calls[1].pre_states[2].account_id,
+        participant_token0.account_id
     );
 }
 
