@@ -1,10 +1,9 @@
 name: ci
 
 # Deliberately fast. `curve-math` has no dependencies and `pool` has two, so this job
-# compiles no LEZ code and cannot fail on a network fetch. That is also where every
-# correctness claim in the proposal lives. The full host build and the risc0 guest build
-# stay a local `lgs build` concern; putting them here would mean a 20-minute cache-sensitive
-# job to babysit during a one-week sprint.
+# compiles only the host-side correctness crates. The full host build and the risc0 guest
+# build stay a local `lgs build` concern; putting them here would mean a 20-minute
+# cache-sensitive job to babysit during a one-week sprint.
 on:
   push:
     branches: [main]
@@ -26,10 +25,10 @@ jobs:
           cargo fmt --manifest-path methods/guest/Cargo.toml --check
 
       - name: clippy
-        run: cargo clippy --locked -p curve-math -p pool --all-targets
+        run: cargo clippy --locked -p curve-math -p pool -p curve-core --all-targets
 
       - name: test
-        run: cargo test --locked -p curve-math -p pool
+        run: cargo test --locked -p curve-math -p pool -p curve-core
 
       - name: pins
         run: ./verify/check-pins.sh
