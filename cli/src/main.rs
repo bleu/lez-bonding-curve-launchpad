@@ -10,12 +10,13 @@ use std::{
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, builder::Styles};
 use launchpad_client::{
-    BuyRequest, CreateSaleRequest, PrivateBuyRequest, SellRequest, build_buy_invocation,
+    BuyRequest, BuyWithCollateralRequest, CreateSaleRequest, PrivateBuyRequest, SellRequest,
+    build_buy_invocation, build_buy_with_collateral_invocation,
     build_claim_creator_allocation_invocation, build_close_factory_pool_invocation,
     build_create_sale_invocation, build_sell_invocation,
     build_withdraw_factory_proceeds_invocation, load_curve_config, load_factory_pool,
     load_factory_state, load_program, parse_account_id, quote_buy, quote_buy_with_collateral,
-    quote_sell, submit_public_invocation, validate_private_buy_request,
+    quote_sell, submit_private_buy, submit_public_invocation,
 };
 use serde::Serialize;
 use wallet::WalletCore;
@@ -77,6 +78,8 @@ enum Command {
     Withdraw(FactoryLifecycleArgs),
     Claim(FactoryLifecycleArgs),
     Buy(BuyArgs),
+    /// Spend an exact collateral amount, with a minimum launch-token output.
+    BuyWithCollateral(BuyWithCollateralArgs),
     /// Buy through the SDK-owned private lifecycle.
     PrivateBuy(PrivateBuyArgs),
     Sell(SellArgs),
@@ -152,6 +155,16 @@ struct BuyArgs {
 }
 
 #[derive(Debug, Args)]
+struct BuyWithCollateralArgs {
+    #[command(flatten)]
+    trade: FactoryTradeArgs,
+    #[arg(long)]
+    collateral: u128,
+    #[arg(long = "min-tokens")]
+    min_tokens: u128,
+}
+
+#[derive(Debug, Args)]
 struct PrivateBuyArgs {
     #[command(flatten)]
     launch: LaunchArgs,
@@ -166,7 +179,7 @@ struct PrivateBuyArgs {
     from_private: String,
     /// Owned private account that receives the purchased launch tokens.
     #[arg(long = "to-private")]
-    to_private: Option<String>,
+    to_private: String,
     /// Native units required for the transient public account's transaction fees.
     #[arg(long = "gas-reserve")]
     gas_reserve: u128,
@@ -174,6 +187,8 @@ struct PrivateBuyArgs {
     factory_program_path: PathBuf,
     #[arg(long = "curve-program-path")]
     curve_program_path: PathBuf,
+    #[arg(long = "private-buy-program-path")]
+    private_buy_program_path: PathBuf,
 }
 
 #[derive(Debug, Args)]
@@ -229,8 +244,6 @@ struct ConfigArgs {
     #[arg(long)]
     admin: String,
     #[arg(long, default_value_t = 0)]
-    pool_fee_bps: u16,
-    #[arg(long, default_value_t = 0)]
     protocol_fee_bps: u16,
     #[arg(long)]
     treasury: String,
@@ -261,6 +274,8 @@ struct SaleSnapshot {
     collateral_definition: String,
     status: &'static str,
     creator_allocation_claimed: bool,
+    sale_quantity: u128,
+    tokens_sold: u128,
     real_token_reserve: u128,
     real_collateral_reserve: u128,
     virtual_token_reserve: u128,
@@ -272,8 +287,8 @@ struct SaleSnapshot {
 struct PriceQuote {
     kind: &'static str,
     amount_in: u128,
+    raw_amount_out: u128,
     amount_out: u128,
-    pool_fee: u128,
     protocol_fee: u128,
 }
 
@@ -307,6 +322,7 @@ async fn run(json: bool, cli: Cli) -> Result<()> {
         Command::Withdraw(args) => withdraw_factory_proceeds(json, args).await,
         Command::Claim(args) => claim_creator_allocation(json, args).await,
         Command::Buy(args) => buy(json, args).await,
+        Command::BuyWithCollateral(args) => buy_with_collateral(json, args).await,
         Command::PrivateBuy(args) => private_buy(args).await,
         Command::Sell(args) => sell(json, args).await,
         Command::Price(args) => price(json, args).await,
@@ -343,7 +359,6 @@ async fn configure(json: bool, args: ConfigArgs) -> Result<()> {
     let invocation = launchpad_client::build_update_config_invocation(
         curve_program.id(),
         admin,
-        args.pool_fee_bps,
         args.protocol_fee_bps,
         treasury,
     );
@@ -417,16 +432,16 @@ async fn price(json: bool, args: PriceArgs) -> Result<()> {
     let output = PriceQuote {
         kind,
         amount_in: quote.amount_in,
+        raw_amount_out: quote.raw_amount_out,
         amount_out: quote.amount_out,
-        pool_fee: quote.pool_fee,
         protocol_fee: quote.protocol_fee,
     };
     if json {
         println!("{}", serde_json::to_string(&output)?);
     } else {
         println!(
-            "{kind} quote: input={} output={} pool_fee={} protocol_fee={}",
-            output.amount_in, output.amount_out, output.pool_fee, output.protocol_fee
+            "{kind} quote: input={} raw_output={} output={} protocol_fee={}",
+            output.amount_in, output.raw_amount_out, output.amount_out, output.protocol_fee
         );
     }
     Ok(())
@@ -452,6 +467,10 @@ async fn sale_snapshot(json: bool, args: LaunchReadArgs) -> Result<()> {
         pool::PoolLifecycle::Closed => "closed",
         pool::PoolLifecycle::Withdrawn => "withdrawn",
     };
+    let tokens_sold = factory
+        .sale_reserve
+        .checked_sub(pool.pool.real_reserve0)
+        .context("factory pool token reserve exceeds its configured sale quantity")?;
     let snapshot = SaleSnapshot {
         launch_salt: hex::encode(args.launch.launch_salt),
         factory_program: factory_program
@@ -464,6 +483,8 @@ async fn sale_snapshot(json: bool, args: LaunchReadArgs) -> Result<()> {
         collateral_definition: factory.collateral_definition_id.to_string(),
         status,
         creator_allocation_claimed: factory.creator_allocation_claimed,
+        sale_quantity: factory.sale_reserve,
+        tokens_sold,
         real_token_reserve: pool.pool.real_reserve0,
         real_collateral_reserve: pool.pool.real_reserve1,
         virtual_token_reserve: pool.pool.virtual_reserve0,
@@ -474,8 +495,12 @@ async fn sale_snapshot(json: bool, args: LaunchReadArgs) -> Result<()> {
         println!("{}", serde_json::to_string(&snapshot)?);
     } else {
         println!(
-            "sale {status}: pool={} token_reserve={} collateral_reserve={}",
-            snapshot.pool, snapshot.real_token_reserve, snapshot.real_collateral_reserve
+            "sale {status}: pool={} sold={}/{} token_reserve={} collateral_reserve={}",
+            snapshot.pool,
+            snapshot.tokens_sold,
+            snapshot.sale_quantity,
+            snapshot.real_token_reserve,
+            snapshot.real_collateral_reserve
         );
     }
     Ok(())
@@ -528,10 +553,83 @@ async fn buy(json: bool, args: BuyArgs) -> Result<()> {
     )
 }
 
+async fn buy_with_collateral(json: bool, args: BuyWithCollateralArgs) -> Result<()> {
+    let factory_program = load_program(&args.trade.factory_program_path)?;
+    let curve_program = load_program(&args.trade.curve_program_path)?;
+    let participant = parse_account_id(&args.trade.participant)?;
+    let collateral_definition = parse_account_id(&args.trade.collateral_definition)?;
+    let wallet = WalletCore::from_env().context("opening the project wallet")?;
+    let config = load_curve_config(&wallet, curve_program.id()).await?;
+    let pool = load_factory_pool(
+        &wallet,
+        factory_program.id(),
+        curve_program.id(),
+        args.trade.launch.launch_salt,
+        collateral_definition,
+    )
+    .await?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("reading the current time")?
+        .as_secs();
+    let quote = quote_buy_with_collateral(&pool, &config, args.collateral, now)?;
+    if quote.amount_out < args.min_tokens {
+        return Err(classified(ErrorCategory::SlippageFloor));
+    }
+    let invocation = build_buy_with_collateral_invocation(
+        factory_program.id(),
+        curve_program.id(),
+        participant,
+        config.treasury,
+        BuyWithCollateralRequest {
+            launch_salt: args.trade.launch.launch_salt,
+            collateral_definition,
+            amount_in: args.collateral,
+            min_amount_out: args.min_tokens,
+        },
+    );
+    let transaction_hash = submit_public_invocation(&wallet, &curve_program, invocation).await?;
+    print_submission(
+        json,
+        "collateral purchase",
+        transaction_hash,
+        args.trade.launch.launch_salt,
+    )
+}
+
 async fn private_buy(args: PrivateBuyArgs) -> Result<()> {
-    validate_private_buy_request(PrivateBuyRequest {
-        gas_reserve: args.gas_reserve,
-    })
+    let factory_program = load_program(&args.factory_program_path)?;
+    let curve_program = load_program(&args.curve_program_path)?;
+    let private_buy_program = load_program(&args.private_buy_program_path)?;
+    let collateral_definition = parse_account_id(&args.collateral_definition)?;
+    let from_private = parse_account_id(&args.from_private)?;
+    let to_private = parse_account_id(&args.to_private)?;
+    let mut wallet = WalletCore::from_env().context("opening the project wallet")?;
+    let config = load_curve_config(&wallet, curve_program.id()).await?;
+    let receipt = submit_private_buy(
+        &mut wallet,
+        &private_buy_program,
+        &curve_program,
+        factory_program.id(),
+        config.treasury,
+        PrivateBuyRequest {
+            launch_salt: args.launch.launch_salt,
+            collateral_definition,
+            amount_out: args.tokens,
+            max_collateral_in: args.max_collateral,
+            from_private,
+            to_private,
+            gas_reserve: args.gas_reserve,
+        },
+    )
+    .await?;
+    println!(
+        "private purchase submitted: transaction_hash={} transient_public_account={} private_destination={}",
+        hex::encode(receipt.transaction_hash),
+        receipt.transient_public_account,
+        receipt.private_destination
+    );
+    Ok(())
 }
 
 async fn sell(json: bool, args: SellArgs) -> Result<()> {
@@ -777,6 +875,20 @@ mod tests {
                 .any(|argument| argument.get_long() == Some("gas-reserve")
                     && argument.is_required_set())
         );
+        assert!(
+            private_buy
+                .get_arguments()
+                .any(|argument| argument.get_long() == Some("to-private")
+                    && argument.is_required_set())
+        );
+        assert!(
+            private_buy
+                .get_arguments()
+                .any(
+                    |argument| argument.get_long() == Some("private-buy-program-path")
+                        && argument.is_required_set()
+                )
+        );
     }
 
     #[test]
@@ -801,6 +913,30 @@ mod tests {
         ])
         .expect("sell command should parse");
         assert!(matches!(cli.command, Command::Sell(_)));
+    }
+
+    #[test]
+    fn collateral_buy_accepts_a_collateral_budget_and_token_floor() {
+        let cli = Cli::try_parse_from([
+            "launchpad",
+            "buy-with-collateral",
+            "--launch-salt",
+            &"11".repeat(32),
+            "--collateral",
+            "25",
+            "--min-tokens",
+            "100",
+            "--collateral-definition",
+            "collateral",
+            "--participant",
+            "Public/participant",
+            "--factory-program-path",
+            "factory.bin",
+            "--curve-program-path",
+            "curve.bin",
+        ])
+        .expect("collateral buy command should parse");
+        assert!(matches!(cli.command, Command::BuyWithCollateral(_)));
     }
 
     #[test]

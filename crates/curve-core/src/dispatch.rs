@@ -24,7 +24,6 @@ pub fn process_instruction(
     match instruction {
         Instruction::UpdateConfig {
             admin,
-            pool_fee_bps,
             protocol_fee_bps,
             treasury,
         } => {
@@ -36,7 +35,6 @@ pub fn process_instruction(
                     config,
                     authority,
                     admin,
-                    pool_fee_bps,
                     protocol_fee_bps,
                     treasury,
                     self_program_id,
@@ -342,25 +340,25 @@ fn settle_exact_input(
     associated_token_account_core::verify_ata_and_get_seed(
         &treasury_token_in_ata,
         &treasury,
-        settlement.token_in,
+        if settlement.protocol_fee_on_output {
+            settlement.token_out
+        } else {
+            settlement.token_in
+        },
         ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID,
     );
 
-    let retained_input = settlement
-        .effective_amount_in
-        .checked_add(settlement.pool_fee)
-        .expect("validated swap amounts fit u128");
     let mut calls = vec![ata_transfer(
         participant.clone(),
         participant_token_in_ata.clone(),
         pool_token_in_ata,
-        retained_input,
+        settlement.effective_amount_in,
     )];
-    if settlement.protocol_fee != 0 {
+    if settlement.protocol_fee != 0 && !settlement.protocol_fee_on_output {
         calls.push(ata_transfer(
             participant,
             participant_token_in_ata,
-            treasury_token_in_ata,
+            treasury_token_in_ata.clone(),
             settlement.protocol_fee,
         ));
     }
@@ -368,8 +366,8 @@ fn settle_exact_input(
     pool_signer.is_authorized = true;
     calls.push(
         ata_transfer(
-            pool_signer,
-            pool_token_out_ata,
+            pool_signer.clone(),
+            pool_token_out_ata.clone(),
             participant_token_out_ata,
             settlement.amount_out,
         )
@@ -379,6 +377,21 @@ fn settle_exact_input(
             pool_state.owner,
         )]),
     );
+    if settlement.protocol_fee != 0 && settlement.protocol_fee_on_output {
+        calls.push(
+            ata_transfer(
+                pool_signer,
+                pool_token_out_ata,
+                treasury_token_in_ata,
+                settlement.protocol_fee,
+            )
+            .with_pda_seeds(vec![compute_pool_pda_seed(
+                pool_state.token0_definition_id,
+                pool_state.token1_definition_id,
+                pool_state.owner,
+            )]),
+        );
+    }
     (posts, calls)
 }
 
@@ -453,24 +466,24 @@ fn settle_exact_output(
     associated_token_account_core::verify_ata_and_get_seed(
         &treasury_token_in_ata,
         &treasury,
-        settlement.token_in,
+        if settlement.protocol_fee_on_output {
+            settlement.token_out
+        } else {
+            settlement.token_in
+        },
         ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID,
     );
-    let retained_input = settlement
-        .effective_amount_in
-        .checked_add(settlement.pool_fee)
-        .expect("validated swap amounts fit u128");
     let mut calls = vec![ata_transfer(
         participant.clone(),
         participant_token_in_ata.clone(),
         pool_token_in_ata,
-        retained_input,
+        settlement.effective_amount_in,
     )];
-    if settlement.protocol_fee != 0 {
+    if settlement.protocol_fee != 0 && !settlement.protocol_fee_on_output {
         calls.push(ata_transfer(
             participant,
             participant_token_in_ata,
-            treasury_token_in_ata,
+            treasury_token_in_ata.clone(),
             settlement.protocol_fee,
         ));
     }
@@ -478,8 +491,8 @@ fn settle_exact_output(
     pool_signer.is_authorized = true;
     calls.push(
         ata_transfer(
-            pool_signer,
-            pool_token_out_ata,
+            pool_signer.clone(),
+            pool_token_out_ata.clone(),
             participant_token_out_ata,
             settlement.amount_out,
         )
@@ -489,6 +502,21 @@ fn settle_exact_output(
             pool_state.owner,
         )]),
     );
+    if settlement.protocol_fee != 0 && settlement.protocol_fee_on_output {
+        calls.push(
+            ata_transfer(
+                pool_signer,
+                pool_token_out_ata,
+                treasury_token_in_ata,
+                settlement.protocol_fee,
+            )
+            .with_pda_seeds(vec![compute_pool_pda_seed(
+                pool_state.token0_definition_id,
+                pool_state.token1_definition_id,
+                pool_state.owner,
+            )]),
+        );
+    }
     (posts, calls)
 }
 

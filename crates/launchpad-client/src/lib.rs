@@ -9,7 +9,7 @@
 //! `src/bin/run_deploy_probe.rs` already needed, moved out of the root package so this
 //! crate has a working consumer from the day it was created.
 
-use std::path::Path;
+use std::{collections::HashMap, path::Path};
 
 use anyhow::{Context, Result, anyhow};
 use associated_token_account_core::{compute_ata_seed, get_associated_token_account_id};
@@ -22,13 +22,14 @@ use factory_core::{
 };
 use lee::{
     AccountId, PublicTransaction,
+    privacy_preserving_transaction::circuit::ProgramWithDependencies,
     program::Program,
     public_transaction::{Message, WitnessSet},
 };
 use lee_core::program::ProgramId;
 use sequencer_service_rpc::RpcClient as _;
 use serde::Serialize;
-use wallet::WalletCore;
+use wallet::{AccountIdentity, WalletCore};
 
 /// Accepts `Public/<base58>`, `Private/<base58>`, or a bare base58 id.
 ///
@@ -71,27 +72,146 @@ pub struct BuyRequest {
     pub max_amount_in: u128,
 }
 
-/// Inputs accepted by the SDK's private-buy boundary.
-///
-/// This boundary intentionally checks platform support before a caller can move
-/// either asset. It prevents a private-buy caller from weakening the required
-/// atomic collateral-and-gas deshield into separate transactions.
+/// Exact-input purchase inputs. The caller spends the stated collateral amount and
+/// receives at least `min_amount_out` launch tokens.
+#[derive(Debug, Clone, Copy)]
+pub struct BuyWithCollateralRequest {
+    pub launch_salt: [u8; 32],
+    pub collateral_definition: AccountId,
+    pub amount_in: u128,
+    pub min_amount_out: u128,
+}
+
+/// Inputs for one RFP-015 private purchase composition.
 #[derive(Debug, Clone, Copy)]
 pub struct PrivateBuyRequest {
-    /// Native units that must accompany collateral in the initial deshield.
+    pub launch_salt: [u8; 32],
+    pub collateral_definition: AccountId,
+    pub amount_out: u128,
+    pub max_collateral_in: u128,
+    pub from_private: AccountId,
+    pub to_private: AccountId,
     pub gas_reserve: u128,
 }
 
-/// Rejects private buy until the SDK has a validated atomic initial-funding
-/// implementation for the pinned LEZ release.
+/// Validates values the private router must not accept as no-op funding.
 pub fn validate_private_buy_request(request: PrivateBuyRequest) -> Result<()> {
     if request.gas_reserve == 0 {
         return Err(anyhow!("private buy requires a non-zero gas reserve"));
     }
+    if request.amount_out == 0 || request.max_collateral_in == 0 {
+        return Err(anyhow!(
+            "private buy requires non-zero token output and collateral cap"
+        ));
+    }
 
-    Err(anyhow!(
-        "private buy is unavailable: this SDK has no validated atomic custom-collateral-and-native-gas deshield implementation for LEZ v0.2.0"
-    ))
+    Ok(())
+}
+
+/// Receipt for the single privacy-preserving transaction submitted by [`submit_private_buy`].
+#[derive(Debug, Clone, Copy)]
+pub struct PrivateBuyReceipt {
+    pub transaction_hash: HashType,
+    pub transient_public_account: AccountId,
+    pub private_destination: AccountId,
+}
+
+/// Submits one private transaction that funds a fresh public account with native gas and
+/// collateral, buys exact launch-token output, then re-shields it to `to_private`.
+///
+/// The router guest is supplied separately because its image ID is deployment-specific. Its
+/// dependencies are pinned LEZ token/ATA/native programs plus the supplied curve guest.
+pub async fn submit_private_buy(
+    wallet: &mut WalletCore,
+    private_buy_program: &Program,
+    curve_program: &Program,
+    factory_program_id: ProgramId,
+    treasury: AccountId,
+    request: PrivateBuyRequest,
+) -> Result<PrivateBuyReceipt> {
+    validate_private_buy_request(request)?;
+    let (transient_public_account, _) = wallet.create_new_account_public(None);
+    wallet
+        .store_config_changes()
+        .await
+        .context("persisting the transient public account key")?;
+
+    let (_, token_definition, pool) = factory_pool_addresses(
+        factory_program_id,
+        curve_program.id(),
+        request.launch_salt,
+        request.collateral_definition,
+    );
+    let ata_program = programs::ata();
+    let token_program = programs::token();
+    let native_transfer_program = programs::authenticated_transfer();
+    let dependencies = HashMap::from([
+        (curve_program.id(), curve_program.clone()),
+        (ata_program.id(), ata_program.clone()),
+        (token_program.id(), token_program.clone()),
+        (
+            native_transfer_program.id(),
+            native_transfer_program.clone(),
+        ),
+    ]);
+    let source = wallet
+        .resolve_private_account(request.from_private)
+        .ok_or_else(|| anyhow!("wallet does not control private collateral source"))?;
+    let destination = wallet
+        .resolve_private_account(request.to_private)
+        .ok_or_else(|| anyhow!("wallet does not control private token destination"))?;
+    let accounts = vec![
+        source,
+        AccountIdentity::Public(transient_public_account),
+        AccountIdentity::PublicNoSign(request.collateral_definition),
+        AccountIdentity::PublicNoSign(token_definition),
+        AccountIdentity::PublicNoSign(associated_token_account(
+            transient_public_account,
+            request.collateral_definition,
+        )),
+        AccountIdentity::PublicNoSign(associated_token_account(
+            transient_public_account,
+            token_definition,
+        )),
+        AccountIdentity::PublicNoSign(pool),
+        AccountIdentity::PublicNoSign(compute_config_pda(curve_program.id())),
+        AccountIdentity::PublicNoSign(associated_token_account(
+            pool,
+            request.collateral_definition,
+        )),
+        AccountIdentity::PublicNoSign(associated_token_account(pool, token_definition)),
+        AccountIdentity::PublicNoSign(associated_token_account(
+            treasury,
+            request.collateral_definition,
+        )),
+        AccountIdentity::PublicNoSign(clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID),
+        destination,
+    ];
+    let instruction = private_flow_core::PrivateBuyInstruction {
+        curve_program_id: curve_program.id(),
+        token_program_id: token_program.id(),
+        ata_program_id: ata_program.id(),
+        native_transfer_program_id: native_transfer_program.id(),
+        amount_out: request.amount_out,
+        max_collateral_in: request.max_collateral_in,
+        gas_reserve: request.gas_reserve,
+        collateral_definition: request.collateral_definition,
+    };
+    let instruction_data = Program::serialize_instruction(instruction)
+        .context("serializing private buy instruction")?;
+    let (transaction_hash, _) = wallet
+        .send_privacy_preserving_tx(
+            accounts,
+            instruction_data,
+            &ProgramWithDependencies::new(private_buy_program.clone(), dependencies),
+        )
+        .await
+        .context("submitting atomic private purchase")?;
+    Ok(PrivateBuyReceipt {
+        transaction_hash,
+        transient_public_account,
+        private_destination: request.to_private,
+    })
 }
 
 /// Exact-input sale inputs. Launch tokens are always the input definition for a factory launch.
@@ -108,7 +228,6 @@ pub struct SellRequest {
 pub fn build_update_config_invocation(
     curve_program_id: ProgramId,
     admin: AccountId,
-    pool_fee_bps: u16,
     protocol_fee_bps: u16,
     treasury: AccountId,
 ) -> PublicInvocation<CurveInstruction> {
@@ -118,7 +237,6 @@ pub fn build_update_config_invocation(
         signer_accounts: vec![admin],
         instruction: CurveInstruction::UpdateConfig {
             admin,
-            pool_fee_bps,
             protocol_fee_bps,
             treasury,
         },
@@ -138,7 +256,7 @@ pub fn quote_buy(
         pool::TokenSide::Token1,
         amount_out,
         u128::MAX,
-        config.pool_fee_bps,
+        0,
         config.protocol_fee_bps,
         now,
     )
@@ -158,7 +276,7 @@ pub fn quote_sell(
         pool::TokenSide::Token0,
         amount_in,
         0,
-        config.pool_fee_bps,
+        0,
         config.protocol_fee_bps,
         now,
     )
@@ -177,7 +295,7 @@ pub fn quote_buy_with_collateral(
         pool::TokenSide::Token1,
         collateral_in,
         0,
-        config.pool_fee_bps,
+        0,
         config.protocol_fee_bps,
         now,
     )
@@ -201,6 +319,12 @@ pub fn build_create_sale_invocation(
     creator: AccountId,
     request: CreateSaleRequest,
 ) -> Result<PublicInvocation<FactoryInstruction>> {
+    factory_core::validate_curve_parameters(
+        request.sale_reserve,
+        request.virtual_token_reserve,
+        request.virtual_collateral_reserve,
+    )
+    .map_err(|error| anyhow!("invalid factory curve parameters: {error}"))?;
     let (factory, token_definition, pool) = factory_pool_addresses(
         factory_program_id,
         curve_program_id,
@@ -376,6 +500,46 @@ pub fn build_buy_invocation(
     }
 }
 
+/// Builds a factory-launch purchase as a neutral curve exact-input swap.
+///
+/// This is the RFP's primary buy form: the participant supplies collateral and
+/// protects the resulting launch-token amount with a floor.
+#[must_use]
+pub fn build_buy_with_collateral_invocation(
+    factory_program_id: ProgramId,
+    curve_program_id: ProgramId,
+    participant: AccountId,
+    treasury: AccountId,
+    request: BuyWithCollateralRequest,
+) -> PublicInvocation<CurveInstruction> {
+    let (_, token_definition, pool) = factory_pool_addresses(
+        factory_program_id,
+        curve_program_id,
+        request.launch_salt,
+        request.collateral_definition,
+    );
+    PublicInvocation {
+        program_id: curve_program_id,
+        account_ids: vec![
+            pool,
+            compute_config_pda(curve_program_id),
+            participant,
+            associated_token_account(participant, request.collateral_definition),
+            associated_token_account(pool, request.collateral_definition),
+            associated_token_account(pool, token_definition),
+            associated_token_account(participant, token_definition),
+            associated_token_account(treasury, request.collateral_definition),
+            clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID,
+        ],
+        signer_accounts: vec![participant],
+        instruction: CurveInstruction::SwapExactInput {
+            amount_in: request.amount_in,
+            min_amount_out: request.min_amount_out,
+            token_in: request.collateral_definition,
+        },
+    }
+}
+
 /// Builds a factory-launch sale as a neutral curve exact-input swap.
 #[must_use]
 pub fn build_sell_invocation(
@@ -401,7 +565,7 @@ pub fn build_sell_invocation(
             associated_token_account(pool, token_definition),
             associated_token_account(pool, request.collateral_definition),
             associated_token_account(participant, request.collateral_definition),
-            associated_token_account(treasury, token_definition),
+            associated_token_account(treasury, request.collateral_definition),
             clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
         signer_accounts: vec![participant],
@@ -536,10 +700,11 @@ mod tests {
     use pool::Pool;
 
     use super::{
-        BuyRequest, CreateSaleRequest, SellRequest, build_buy_invocation,
-        build_claim_creator_allocation_invocation, build_close_factory_pool_invocation,
-        build_create_sale_invocation, build_sell_invocation, build_update_config_invocation,
-        build_withdraw_factory_proceeds_invocation, quote_buy,
+        BuyRequest, BuyWithCollateralRequest, CreateSaleRequest, SellRequest, build_buy_invocation,
+        build_buy_with_collateral_invocation, build_claim_creator_allocation_invocation,
+        build_close_factory_pool_invocation, build_create_sale_invocation, build_sell_invocation,
+        build_update_config_invocation, build_withdraw_factory_proceeds_invocation, quote_buy,
+        quote_buy_with_collateral, quote_sell,
     };
 
     const FACTORY_PROGRAM_ID: [u32; 8] = [7; 8];
@@ -589,10 +754,34 @@ mod tests {
     }
 
     #[test]
+    fn factory_launch_rejects_a_virtual_token_reserve_at_the_sale_target() {
+        let error = build_create_sale_invocation(
+            FACTORY_PROGRAM_ID,
+            CURVE_PROGRAM_ID,
+            AccountId::new([9; 32]),
+            CreateSaleRequest {
+                launch_salt: [1; 32],
+                name: "E2E token".into(),
+                uri: "https://example.invalid/e2e-token.json".into(),
+                sale_reserve: 800,
+                dex_seed_reserve: 100,
+                creator_allocation: 50,
+                virtual_token_reserve: 800,
+                virtual_collateral_reserve: 100,
+                end_timestamp: None,
+                collateral_definition: AccountId::new([5; 32]),
+            },
+        )
+        .expect_err("a curve must not reach its asymptote at the sale target");
+
+        assert!(error.to_string().contains("must exceed"));
+    }
+
+    #[test]
     fn config_initialization_uses_the_curve_config_pda_and_admin_signature() {
         let admin = AccountId::new([9; 32]);
         let treasury = AccountId::new([4; 32]);
-        let invocation = build_update_config_invocation(CURVE_PROGRAM_ID, admin, 25, 75, treasury);
+        let invocation = build_update_config_invocation(CURVE_PROGRAM_ID, admin, 75, treasury);
 
         assert_eq!(invocation.program_id, CURVE_PROGRAM_ID);
         assert_eq!(
@@ -604,7 +793,6 @@ mod tests {
             invocation.instruction,
             curve_core::Instruction::UpdateConfig {
                 admin: actual_admin,
-                pool_fee_bps: 25,
                 protocol_fee_bps: 75,
                 treasury: actual_treasury,
             } if actual_admin == admin && actual_treasury == treasury
@@ -739,6 +927,50 @@ mod tests {
     }
 
     #[test]
+    fn collateral_buy_builds_an_exact_input_swap_with_collateral_as_input() {
+        let launch_salt = [1; 32];
+        let participant = AccountId::new([9; 32]);
+        let collateral_definition = AccountId::new([5; 32]);
+        let treasury = AccountId::new([4; 32]);
+        let invocation = build_buy_with_collateral_invocation(
+            FACTORY_PROGRAM_ID,
+            CURVE_PROGRAM_ID,
+            participant,
+            treasury,
+            BuyWithCollateralRequest {
+                launch_salt,
+                collateral_definition,
+                amount_in: 25,
+                min_amount_out: 100,
+            },
+        );
+
+        let definition = compute_definition_pda(FACTORY_PROGRAM_ID, launch_salt);
+        assert_eq!(invocation.program_id, CURVE_PROGRAM_ID);
+        assert_eq!(invocation.signer_accounts, vec![participant]);
+        assert_eq!(
+            invocation.account_ids[3],
+            super::associated_token_account(participant, collateral_definition)
+        );
+        assert_eq!(
+            invocation.account_ids[6],
+            super::associated_token_account(participant, definition)
+        );
+        assert_eq!(
+            invocation.account_ids[7],
+            super::associated_token_account(treasury, collateral_definition)
+        );
+        assert!(matches!(
+            invocation.instruction,
+            curve_core::Instruction::SwapExactInput {
+                amount_in: 25,
+                min_amount_out: 100,
+                token_in,
+            } if token_in == collateral_definition
+        ));
+    }
+
+    #[test]
     fn sell_builds_an_exact_input_swap_with_launch_tokens_as_input() {
         let launch_salt = [1; 32];
         let participant = AccountId::new([9; 32]);
@@ -770,7 +1002,7 @@ mod tests {
         );
         assert_eq!(
             invocation.account_ids[7],
-            super::associated_token_account(treasury, definition)
+            super::associated_token_account(treasury, collateral_definition)
         );
         assert!(matches!(
             invocation.instruction,
@@ -783,7 +1015,7 @@ mod tests {
     }
 
     #[test]
-    fn buy_quote_uses_current_reserves_and_live_fee_settings() {
+    fn public_trade_quotes_use_the_same_snapshot_and_rounding_rules_as_the_pool() {
         let token_definition = AccountId::new([2; 32]);
         let collateral_definition = AccountId::new([5; 32]);
         let pool = curve_core::PoolAccount {
@@ -794,14 +1026,21 @@ mod tests {
         };
         let config = curve_core::Config {
             admin: AccountId::new([3; 32]),
-            pool_fee_bps: 0,
             protocol_fee_bps: 0,
             treasury: AccountId::new([4; 32]),
         };
 
-        let quote = quote_buy(&pool, &config, 200, 1).expect("quote should succeed");
-        assert_eq!(quote.amount_in, 25);
-        assert_eq!(quote.amount_out, 200);
+        let exact_output = quote_buy(&pool, &config, 200, 1).expect("buy quote should succeed");
+        let exact_input = quote_buy_with_collateral(&pool, &config, 25, 1)
+            .expect("collateral-input buy quote should succeed");
+        let sell = quote_sell(&pool, &config, 250, 1).expect("sell quote should succeed");
+
+        assert_eq!((exact_output.amount_in, exact_output.amount_out), (25, 200));
+        assert_eq!((exact_input.amount_in, exact_input.amount_out), (25, 200));
+        assert_eq!((sell.amount_in, sell.amount_out), (250, 20));
+        assert_eq!(pool.pool.k, 100_000, "quoting must not mutate the snapshot");
+        assert_eq!(pool.pool.real_reserve0, 800);
+        assert_eq!(pool.pool.real_reserve1, 100);
     }
 
     #[test]
@@ -838,21 +1077,31 @@ mod tests {
     }
 
     #[test]
-    fn private_buy_refuses_to_split_collateral_and_native_gas_deshielding() {
-        let error =
-            super::validate_private_buy_request(super::PrivateBuyRequest { gas_reserve: 1 })
-                .expect_err(
-                    "the SDK must reject until its atomic deshield implementation is validated",
-                );
-
-        assert!(error.to_string().contains("no validated atomic"));
+    fn private_buy_requires_atomic_funding_inputs() {
+        super::validate_private_buy_request(super::PrivateBuyRequest {
+            launch_salt: [1; 32],
+            collateral_definition: AccountId::new([5; 32]),
+            amount_out: 25,
+            max_collateral_in: 100,
+            from_private: AccountId::new([6; 32]),
+            to_private: AccountId::new([7; 32]),
+            gas_reserve: 1,
+        })
+        .expect("complete private-buy inputs are valid");
     }
 
     #[test]
     fn private_buy_requires_an_explicit_nonzero_gas_reserve() {
-        let error =
-            super::validate_private_buy_request(super::PrivateBuyRequest { gas_reserve: 0 })
-                .expect_err("zero gas would make the public account unusable");
+        let error = super::validate_private_buy_request(super::PrivateBuyRequest {
+            launch_salt: [1; 32],
+            collateral_definition: AccountId::new([5; 32]),
+            amount_out: 25,
+            max_collateral_in: 100,
+            from_private: AccountId::new([6; 32]),
+            to_private: AccountId::new([7; 32]),
+            gas_reserve: 0,
+        })
+        .expect_err("zero gas would make the public account unusable");
 
         assert!(error.to_string().contains("non-zero gas reserve"));
     }

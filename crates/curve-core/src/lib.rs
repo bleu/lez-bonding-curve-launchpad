@@ -37,7 +37,6 @@ pub enum Instruction {
     ///   admin after
     UpdateConfig {
         admin: AccountId,
-        pool_fee_bps: u16,
         protocol_fee_bps: u16,
         treasury: AccountId,
     },
@@ -114,8 +113,8 @@ impl From<DepletionSide> for pool::TokenSide {
 /// Replace with the operator's key before deploying. See the README, "Admin authority".
 pub const GENESIS_ADMIN: AccountId = AccountId::new([0xAD; 32]);
 
-/// The fee denominator. A combined fee above this would make `amount - fee`
-/// underflow, so `update_config` rejects it.
+/// The protocol fee denominator. A fee at this rate consumes its buy-side input,
+/// so the swap state machine rejects it as untradeable.
 pub const MAX_FEE_BPS: u16 = 10_000;
 
 /// The ATA program shipped by the pinned LEZ revision. Program IDs are risc0
@@ -136,7 +135,6 @@ pub const ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID: ProgramId = [
 #[derive(Clone, Default, BorshSerialize, BorshDeserialize)]
 pub struct Config {
     pub admin: AccountId,
-    pub pool_fee_bps: u16,
     pub protocol_fee_bps: u16,
     pub treasury: AccountId,
 }

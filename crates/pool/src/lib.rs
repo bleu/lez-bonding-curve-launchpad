@@ -78,27 +78,63 @@ pub enum PoolLifecycle {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SwapOutcome {
-    /// Gross debit from the trader, including both fee portions.
+    /// Gross debit from the trader.
     pub amount_in: u128,
     /// Amount used by the constant-product quote.
     pub effective_amount_in: u128,
+    /// Collateral output before a sell-side protocol fee.
+    pub raw_amount_out: u128,
+    /// Amount received by the trader after a possible sell-side protocol fee.
     pub amount_out: u128,
-    /// Fee retained in the input-side real and virtual reserves.
-    pub pool_fee: u128,
-    /// Fee transferred to the treasury holding for the input token.
+    /// Fee transferred atomically to the collateral treasury.
     pub protocol_fee: u128,
+    /// Buys charge the collateral input; sells charge the collateral output.
+    pub protocol_fee_on_output: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SwapError {
     Closed,
     ZeroAmount,
+    /// A non-zero input would produce no output after conservative integer rounding.
+    /// Rejecting this avoids accepting a value-destructive no-op trade.
+    OutputTooSmall,
+    /// A requested exact output would require no input after conservative rounding.
+    /// Rejecting this prevents a zero-cost transfer.
+    InputTooSmall,
     FeeAboveDenominator,
+    PoolFeeUnsupported,
     InputConsumedByFees,
+    ExactOutputRequiresCollateralInput,
     Arithmetic,
     SlippageExceeded,
     InsufficientRealOutputReserve,
 }
+
+impl std::fmt::Display for SwapError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let message = match self {
+            Self::Closed => "the pool is closed",
+            Self::ZeroAmount => "swap input or requested output must be non-zero",
+            Self::OutputTooSmall => "the input is too small to produce one output unit",
+            Self::InputTooSmall => "the requested output does not require one input unit",
+            Self::FeeAboveDenominator => "protocol fee exceeds 10,000 basis points",
+            Self::PoolFeeUnsupported => "retained pool fees are not supported by this launchpad",
+            Self::InputConsumedByFees => "fees consume the entire input amount",
+            Self::ExactOutputRequiresCollateralInput => {
+                "exact-output swaps are supported only for collateral-input buys"
+            }
+            Self::Arithmetic => "the swap would overflow the supported arithmetic range",
+            Self::SlippageExceeded => "the swap would exceed its slippage limit",
+            Self::InsufficientRealOutputReserve => {
+                "the pool lacks the real reserve for this output"
+            }
+        };
+        f.write_str(message)
+    }
+}
+
+impl std::error::Error for SwapError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WithdrawError {
@@ -160,43 +196,61 @@ impl Pool {
         if amount_in == 0 {
             return Err(SwapError::ZeroAmount);
         }
-        let (effective_input, pool_fee, protocol_fee) =
-            split_input(amount_in, pool_fee_bps, protocol_fee_bps)?;
-        let (virtual_in, virtual_out, real_in, real_out) = self.reserves(token_in);
-        let current_product = virtual_in
-            .checked_mul(virtual_out)
+        if pool_fee_bps != 0 {
+            return Err(SwapError::PoolFeeUnsupported);
+        }
+        validate_fee_rate(protocol_fee_bps)?;
+        let is_buy = token_in == TokenSide::Token1;
+        let protocol_fee = if is_buy {
+            fee_ceil(amount_in, protocol_fee_bps)?
+        } else {
+            0
+        };
+        let effective_input = amount_in
+            .checked_sub(protocol_fee)
             .ok_or(SwapError::Arithmetic)?;
+        if effective_input == 0 {
+            return Err(SwapError::InputConsumedByFees);
+        }
+        let (virtual_in, virtual_out, real_in, real_out) = self.reserves(token_in);
         let amount_out = curve_math::exact_input_amount_out_floor(
             virtual_in,
             virtual_out,
-            current_product,
+            self.k,
             effective_input,
         )
         .map_err(|_| SwapError::Arithmetic)?;
-        if amount_out < min_amount_out {
+        if amount_out == 0 {
+            return Err(SwapError::OutputTooSmall);
+        }
+        let (recipient_amount_out, protocol_fee, protocol_fee_on_output) = if is_buy {
+            (amount_out, protocol_fee, false)
+        } else {
+            let fee = fee_ceil(amount_out, protocol_fee_bps)?;
+            let net = amount_out.checked_sub(fee).ok_or(SwapError::Arithmetic)?;
+            if net == 0 {
+                return Err(SwapError::OutputTooSmall);
+            }
+            (net, fee, true)
+        };
+        if recipient_amount_out < min_amount_out {
             return Err(SwapError::SlippageExceeded);
         }
         if amount_out > real_out {
             return Err(SwapError::InsufficientRealOutputReserve);
         }
-        let retained_input = effective_input
-            .checked_add(pool_fee)
-            .ok_or(SwapError::Arithmetic)?;
         let new_virtual_in = virtual_in
-            .checked_add(retained_input)
+            .checked_add(effective_input)
             .ok_or(SwapError::Arithmetic)?;
         let new_virtual_out = virtual_out
             .checked_sub(amount_out)
-            .ok_or(SwapError::Arithmetic)?;
-        new_virtual_in
-            .checked_mul(new_virtual_out)
             .ok_or(SwapError::Arithmetic)?;
         self.set_reserves(
             token_in,
             new_virtual_in,
             new_virtual_out,
             real_in
-                .checked_add(retained_input)
+                .checked_add(effective_input)
                 .ok_or(SwapError::Arithmetic)?,
             real_out
                 .checked_sub(amount_out)
@@ -206,9 +260,10 @@ impl Pool {
         Ok(SwapOutcome {
             amount_in,
             effective_amount_in: effective_input,
-            amount_out,
-            pool_fee,
+            raw_amount_out: amount_out,
+            amount_out: recipient_amount_out,
             protocol_fee,
+            protocol_fee_on_output,
         })
     }
 
@@ -222,6 +277,12 @@ impl Pool {
         now: u64,
     ) -> Result<SwapOutcome, SwapError> {
         self.ensure_swappable(now)?;
+        if token_in != TokenSide::Token1 {
+            return Err(SwapError::ExactOutputRequiresCollateralInput);
+        }
+        if pool_fee_bps != 0 {
+            return Err(SwapError::PoolFeeUnsupported);
+        }
         if amount_out == 0 {
             return Err(SwapError::ZeroAmount);
         }
@@ -229,18 +290,14 @@ impl Pool {
         if amount_out > real_out {
             return Err(SwapError::InsufficientRealOutputReserve);
         }
-        let current_product = virtual_in
-            .checked_mul(virtual_out)
-            .ok_or(SwapError::Arithmetic)?;
-        let required_effective_input = curve_math::exact_output_amount_in_ceil(
-            virtual_in,
-            virtual_out,
-            current_product,
-            amount_out,
-        )
-        .map_err(|_| SwapError::Arithmetic)?;
-        let total_fee_bps = validate_fee_rates(pool_fee_bps, protocol_fee_bps)?;
-        if total_fee_bps == 10_000 {
+        let required_effective_input =
+            curve_math::exact_output_amount_in_ceil(virtual_in, virtual_out, self.k, amount_out)
+                .map_err(|_| SwapError::Arithmetic)?;
+        if required_effective_input == 0 {
+            return Err(SwapError::InputTooSmall);
+        }
+        validate_fee_rate(protocol_fee_bps)?;
+        if protocol_fee_bps == 10_000 {
             return Err(SwapError::InputConsumedByFees);
         }
         let amount_in = mul_div_ceil(
@@ -248,33 +305,29 @@ impl Pool {
             10_000,
             u128::from(
                 10_000_u16
-                    .checked_sub(total_fee_bps)
+                    .checked_sub(protocol_fee_bps)
                     .ok_or(SwapError::Arithmetic)?,
             ),
         )?;
-        let (effective_input, pool_fee, protocol_fee) =
-            split_input(amount_in, pool_fee_bps, protocol_fee_bps)?;
+        let protocol_fee = fee_ceil(amount_in, protocol_fee_bps)?;
+        let effective_input = amount_in
+            .checked_sub(protocol_fee)
+            .ok_or(SwapError::Arithmetic)?;
         if amount_in > max_amount_in {
             return Err(SwapError::SlippageExceeded);
         }
-        let retained_input = effective_input
-            .checked_add(pool_fee)
-            .ok_or(SwapError::Arithmetic)?;
         let new_virtual_in = virtual_in
-            .checked_add(retained_input)
+            .checked_add(effective_input)
             .ok_or(SwapError::Arithmetic)?;
         let new_virtual_out = virtual_out
             .checked_sub(amount_out)
-            .ok_or(SwapError::Arithmetic)?;
-        new_virtual_in
-            .checked_mul(new_virtual_out)
             .ok_or(SwapError::Arithmetic)?;
         self.set_reserves(
             token_in,
             new_virtual_in,
             new_virtual_out,
             real_in
-                .checked_add(retained_input)
+                .checked_add(effective_input)
                 .ok_or(SwapError::Arithmetic)?,
             real_out
                 .checked_sub(amount_out)
@@ -284,9 +337,10 @@ impl Pool {
         Ok(SwapOutcome {
             amount_in,
             effective_amount_in: effective_input,
+            raw_amount_out: amount_out,
             amount_out,
-            pool_fee,
             protocol_fee,
+            protocol_fee_on_output: false,
         })
     }
 
@@ -416,43 +470,16 @@ fn mul_div_ceil(value: u128, multiplier: u128, divisor: u128) -> Result<u128, Sw
     }
 }
 
-fn validate_fee_rates(pool_fee_bps: u16, protocol_fee_bps: u16) -> Result<u16, SwapError> {
-    let total_fee_bps = pool_fee_bps
-        .checked_add(protocol_fee_bps)
-        .ok_or(SwapError::FeeAboveDenominator)?;
-    if total_fee_bps > 10_000 {
+fn validate_fee_rate(protocol_fee_bps: u16) -> Result<(), SwapError> {
+    if protocol_fee_bps > 10_000 {
         Err(SwapError::FeeAboveDenominator)
     } else {
-        Ok(total_fee_bps)
+        Ok(())
     }
 }
 
-fn split_input(
-    gross_input: u128,
-    pool_fee_bps: u16,
-    protocol_fee_bps: u16,
-) -> Result<(u128, u128, u128), SwapError> {
-    let total_fee_bps = validate_fee_rates(pool_fee_bps, protocol_fee_bps)?;
-    if total_fee_bps == 0 {
-        return Ok((gross_input, 0, 0));
-    }
-
-    let combined_fee = mul_div_ceil(gross_input, u128::from(total_fee_bps), 10_000)?;
-    let effective_input = gross_input
-        .checked_sub(combined_fee)
-        .ok_or(SwapError::Arithmetic)?;
-    if effective_input == 0 {
-        return Err(SwapError::InputConsumedByFees);
-    }
-    let protocol_fee = mul_div_floor(
-        combined_fee,
-        u128::from(protocol_fee_bps),
-        u128::from(total_fee_bps),
-    )?;
-    let pool_fee = combined_fee
-        .checked_sub(protocol_fee)
-        .ok_or(SwapError::Arithmetic)?;
-    Ok((effective_input, pool_fee, protocol_fee))
+fn fee_ceil(amount: u128, protocol_fee_bps: u16) -> Result<u128, SwapError> {
+    mul_div_ceil(amount, u128::from(protocol_fee_bps), 10_000)
 }
 
 #[cfg(test)]
@@ -480,7 +507,7 @@ mod tests {
 
         assert_eq!(outcome.amount_in, 250);
         assert_eq!(outcome.amount_out, 20);
-        assert_eq!((outcome.pool_fee, outcome.protocol_fee), (0, 0));
+        assert_eq!(outcome.protocol_fee, 0);
         assert_eq!(pool.virtual_reserve0, 1250);
         assert_eq!(pool.virtual_reserve1, 80);
         assert_eq!(pool.real_reserve0, 1050);
@@ -526,39 +553,77 @@ mod tests {
     }
 
     #[test]
-    fn exact_input_pool_fee_is_retained_in_whichever_token_is_input() {
-        let mut token0_in = Pool::create(800, 100, 1000, 100, None, None).expect("valid pool");
-        let forward = token0_in
-            .swap_exact_input(TokenSide::Token0, 250, 18, 1_000, 0, 1)
-            .expect("token0 input succeeds");
-        assert_eq!((forward.pool_fee, forward.protocol_fee), (25, 0));
-        assert_eq!(forward.amount_out, 18);
-        assert_eq!(token0_in.real_reserve0, 1050);
+    fn protocol_fee_is_collateral_input_on_buy_and_collateral_output_on_sell() {
+        let mut buy_pool = Pool::create(800, 100, 1_000, 100, None, None).expect("valid pool");
+        let buy = buy_pool
+            .swap_exact_input(TokenSide::Token1, 25, 180, 0, 1_000, 1)
+            .expect("buy succeeds");
+        assert_eq!((buy.effective_amount_in, buy.protocol_fee), (22, 3));
+        assert_eq!((buy.raw_amount_out, buy.amount_out), (180, 180));
+        assert!(!buy.protocol_fee_on_output);
+        assert_eq!(buy_pool.real_reserve1, 122);
 
-        let mut token1_in = Pool::create(800, 100, 1000, 100, None, None).expect("valid pool");
-        let reverse = token1_in
-            .swap_exact_input(TokenSide::Token1, 25, 180, 1_000, 0, 1)
-            .expect("token1 input succeeds");
-        assert_eq!((reverse.pool_fee, reverse.protocol_fee), (3, 0));
-        assert_eq!(reverse.amount_out, 180);
-        assert_eq!(token1_in.real_reserve1, 125);
+        let mut sell_pool = Pool::create(800, 100, 1_000, 100, None, None).expect("valid pool");
+        let sell = sell_pool
+            .swap_exact_input(TokenSide::Token0, 250, 18, 0, 1_000, 1)
+            .expect("sell succeeds");
+        assert_eq!(
+            (sell.raw_amount_out, sell.protocol_fee, sell.amount_out),
+            (20, 2, 18)
+        );
+        assert!(sell.protocol_fee_on_output);
+        assert_eq!(
+            sell_pool.real_reserve1, 80,
+            "the fee leaves the collateral reserve"
+        );
     }
 
     #[test]
     fn exact_output_swaps_token1_for_token0_with_the_fee_inside_max_input() {
         let mut pool = Pool::create(800, 100, 1000, 100, None, None).expect("valid pool");
         let outcome = pool
-            .swap_exact_output(TokenSide::Token1, 200, 28, 1_000, 0, 1)
+            .swap_exact_output(TokenSide::Token1, 200, 28, 0, 1_000, 1)
             .expect("swap succeeds");
 
         assert_eq!(outcome.amount_in, 28);
         assert_eq!(outcome.amount_out, 200);
-        assert_eq!(outcome.pool_fee, 3);
-        assert_eq!(outcome.protocol_fee, 0);
+        assert_eq!(outcome.protocol_fee, 3);
         assert_eq!(pool.virtual_reserve0, 800);
-        assert_eq!(pool.virtual_reserve1, 128);
+        assert_eq!(pool.virtual_reserve1, 125);
         assert_eq!(pool.real_reserve0, 600);
-        assert_eq!(pool.real_reserve1, 128);
+        assert_eq!(pool.real_reserve1, 125);
+    }
+
+    #[test]
+    fn later_quotes_continue_to_use_the_creation_time_k() {
+        let mut pool = Pool::create(1_000, 1_000, 1_000, 1_000, None, None).expect("valid pool");
+
+        pool.swap_exact_input(TokenSide::Token0, 100, 0, 0, 0, 1)
+            .expect("first swap succeeds");
+        // The first integer-rounded swap leaves the live reserve product at
+        // 1,001,000. RFP-015 fixes the pricing invariant at creation-time k,
+        // so the next 100-unit input pays 76 rather than the 75 a live-product
+        // quote would produce.
+        let outcome = pool
+            .swap_exact_input(TokenSide::Token0, 100, 0, 0, 0, 1)
+            .expect("second swap succeeds");
+
+        assert_eq!(pool.k, 1_000_000);
+        assert_eq!(outcome.amount_out, 76);
+    }
+
+    #[test]
+    fn exact_output_rejects_a_zero_cost_quote_without_mutating_the_pool() {
+        let mut pool = Pool::create(1, 74_513, 1, 1_709, None, None).expect("valid pool");
+        pool.swap_exact_input(TokenSide::Token0, u64::MAX.into(), 0, 0, 0, 1)
+            .expect("first swap succeeds");
+        let before = pool.clone();
+
+        assert_eq!(
+            pool.swap_exact_output(TokenSide::Token1, 1, 0, 0, 0, 1),
+            Err(SwapError::InputTooSmall)
+        );
+        assert_eq!(pool, before);
     }
 
     #[test]
@@ -566,17 +631,41 @@ mod tests {
         for fee_bps in [1, 2_500, 9_999] {
             let mut pool = Pool::create(800, 100, 1000, 100, None, None).expect("valid pool");
             let outcome = pool
-                .swap_exact_output(TokenSide::Token1, 100, u128::MAX, fee_bps, 0, 1)
+                .swap_exact_output(TokenSide::Token1, 100, u128::MAX, 0, fee_bps, 1)
                 .expect("swap succeeds");
             let required_net = 12;
-            let (net, _, _) =
-                split_input(outcome.amount_in, fee_bps, 0).expect("small fee arithmetic");
-            assert!(net >= required_net);
+            assert_eq!(
+                outcome.effective_amount_in,
+                outcome.amount_in - outcome.protocol_fee
+            );
+            assert!(outcome.effective_amount_in >= required_net);
             let previous = outcome.amount_in.checked_sub(1).expect("positive input");
-            match split_input(previous, fee_bps, 0) {
-                Ok((previous_net, _, _)) => assert!(previous_net < required_net),
-                Err(SwapError::InputConsumedByFees) => {}
-                Err(error) => panic!("unexpected fee error: {error:?}"),
+            let previous_effective = previous - fee_ceil(previous, fee_bps).expect("fee fits");
+            assert!(previous_effective < required_net);
+        }
+    }
+
+    #[test]
+    fn exact_output_is_the_smallest_zero_fee_input_that_reaches_the_requested_amount() {
+        for amount_out in [1, 100, 200, 799] {
+            let mut quoted = Pool::create(800, 100, 1_000, 100, None, None).expect("valid pool");
+            let outcome = quoted
+                .swap_exact_output(TokenSide::Token1, amount_out, u128::MAX, 0, 0, 1)
+                .expect("exact-output quote succeeds");
+
+            let mut at_quote = Pool::create(800, 100, 1_000, 100, None, None).expect("valid pool");
+            let produced = at_quote
+                .swap_exact_input(TokenSide::Token1, outcome.amount_in, 0, 0, 0, 1)
+                .expect("the quoted input is executable");
+            assert!(produced.amount_out >= amount_out);
+
+            let mut below_quote =
+                Pool::create(800, 100, 1_000, 100, None, None).expect("valid pool");
+            if outcome.amount_in > 1 {
+                let previous = below_quote
+                    .swap_exact_input(TokenSide::Token1, outcome.amount_in - 1, 0, 0, 0, 1)
+                    .expect("one less input remains a positive trade");
+                assert!(previous.amount_out < amount_out);
             }
         }
     }
@@ -619,6 +708,18 @@ mod tests {
             PoolLifecycle::Open,
             "unconfigured depletion must not close the pool"
         );
+    }
+
+    #[test]
+    fn exact_input_rejects_a_nonzero_trade_that_rounds_to_zero_output() {
+        let mut pool = Pool::create(800, 100, 1_000, 1_000, None, None).expect("valid pool");
+        let before = pool.clone();
+
+        assert_eq!(
+            pool.swap_exact_input(TokenSide::Token0, 1, 0, 0, 0, 1),
+            Err(SwapError::OutputTooSmall)
+        );
+        assert_eq!(pool, before, "a rejected dust trade must be atomic");
     }
 
     #[test]

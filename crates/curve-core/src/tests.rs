@@ -51,7 +51,6 @@ fn initialized_config(admin: AccountId) -> AccountWithMetadata {
         program_owner: CURVE_PROGRAM_ID,
         data: Data::from(&Config {
             admin,
-            pool_fee_bps: 150,
             protocol_fee_bps: 100,
             treasury: new_treasury(),
         }),
@@ -465,7 +464,6 @@ fn init_rejects_an_authority_other_than_the_genesis_admin() {
         uninitialized_config(),
         intruder_signer(),
         new_admin(),
-        150,
         100,
         new_treasury(),
         CURVE_PROGRAM_ID,
@@ -483,7 +481,6 @@ fn update_config_rejects_an_unauthorized_authority() {
         uninitialized_config(),
         unsigned_genesis_admin,
         new_admin(),
-        150,
         100,
         new_treasury(),
         CURVE_PROGRAM_ID,
@@ -499,7 +496,6 @@ fn stored_admin_rotates_the_admin_to_a_new_key() {
         initialized_config(new_admin()),
         signer(new_admin()),
         rotated_to,
-        60,
         40,
         new_treasury(),
         CURVE_PROGRAM_ID,
@@ -509,7 +505,6 @@ fn stored_admin_rotates_the_admin_to_a_new_key() {
     let config =
         Config::try_from(&config_post.account().data).expect("post state holds a valid Config");
     assert_eq!(config.admin, rotated_to);
-    assert_eq!(config.pool_fee_bps, 60);
     assert_eq!(config.protocol_fee_bps, 40);
     assert_eq!(
         config_post.required_claim(),
@@ -527,22 +522,20 @@ fn update_rejects_the_rotated_out_admin() {
         initialized_config(new_admin()),
         genesis_admin_signer(),
         new_admin(),
-        150,
         100,
         new_treasury(),
         CURVE_PROGRAM_ID,
     );
 }
 
-#[should_panic(expected = "Combined fee rate exceeds 10,000 basis points")]
+#[should_panic(expected = "Protocol fee exceeds 10,000 basis points")]
 #[test]
-fn update_config_rejects_combined_fees_above_the_denominator() {
+fn update_config_rejects_protocol_fee_above_the_denominator() {
     let _post_states = update_config(
         uninitialized_config(),
         genesis_admin_signer(),
         new_admin(),
-        10_000,
-        1,
+        10_001,
         new_treasury(),
         CURVE_PROGRAM_ID,
     );
@@ -551,13 +544,12 @@ fn update_config_rejects_combined_fees_above_the_denominator() {
 // Zero is legal (pool creation remains free and a fee-free pool is valid), and
 // 10,000 is the denominator itself.
 #[test]
-fn fee_boundaries_are_legal() {
-    for (pool_fee_bps, protocol_fee_bps) in [(0, 0), (10_000, 0), (0, 10_000)] {
+fn protocol_fee_boundaries_are_legal() {
+    for protocol_fee_bps in [0, 10_000] {
         let post_states = update_config(
             uninitialized_config(),
             genesis_admin_signer(),
             new_admin(),
-            pool_fee_bps,
             protocol_fee_bps,
             new_treasury(),
             CURVE_PROGRAM_ID,
@@ -565,7 +557,6 @@ fn fee_boundaries_are_legal() {
         let [config_post]: [_; 1] = post_states.try_into().expect("exactly one post state");
         let config =
             Config::try_from(&config_post.account().data).expect("post state holds a valid Config");
-        assert_eq!(config.pool_fee_bps, pool_fee_bps);
         assert_eq!(config.protocol_fee_bps, protocol_fee_bps);
     }
 }
@@ -579,7 +570,6 @@ fn update_config_rejects_a_default_admin() {
         uninitialized_config(),
         genesis_admin_signer(),
         AccountId::default(),
-        150,
         100,
         new_treasury(),
         CURVE_PROGRAM_ID,
@@ -593,7 +583,6 @@ fn update_config_rejects_a_default_treasury() {
         uninitialized_config(),
         genesis_admin_signer(),
         new_admin(),
-        150,
         100,
         AccountId::default(),
         CURVE_PROGRAM_ID,
@@ -611,7 +600,6 @@ fn update_config_rejects_a_forged_config_account() {
         forged_config,
         genesis_admin_signer(),
         new_admin(),
-        150,
         100,
         new_treasury(),
         CURVE_PROGRAM_ID,
@@ -624,7 +612,6 @@ fn first_update_config_initializes_the_config() {
         uninitialized_config(),
         genesis_admin_signer(),
         new_admin(),
-        150,
         100,
         new_treasury(),
         CURVE_PROGRAM_ID,
@@ -634,7 +621,6 @@ fn first_update_config_initializes_the_config() {
     let config =
         Config::try_from(&config_post.account().data).expect("post state holds a valid Config");
     assert_eq!(config.admin, new_admin());
-    assert_eq!(config.pool_fee_bps, 150);
     assert_eq!(config.protocol_fee_bps, 100);
     assert_eq!(config.treasury, new_treasury());
     assert_eq!(
@@ -842,7 +828,7 @@ fn withdraw_dispatch_transfers_both_real_reserves_and_retires_the_pool() {
 }
 
 #[test]
-fn exact_input_handler_selects_direction_and_pairs_the_fee_with_token_in() {
+fn exact_input_sell_charges_the_protocol_fee_in_collateral() {
     let owner = AccountId::new([3; 32]);
     let token0 = AccountId::new([1; 32]);
     let token1 = AccountId::new([2; 32]);
@@ -873,15 +859,16 @@ fn exact_input_handler_selects_direction_and_pairs_the_fee_with_token_in() {
     );
     assert_eq!(settlement.token_in, token0);
     assert_eq!(settlement.token_out, token1);
-    assert_eq!(settlement.effective_amount_in, 243);
-    assert_eq!(settlement.pool_fee, 5);
-    assert_eq!(settlement.protocol_fee, 2);
+    assert_eq!(settlement.effective_amount_in, 250);
+    assert_eq!(settlement.raw_amount_out, 20);
+    assert_eq!(settlement.protocol_fee, 1);
+    assert!(settlement.protocol_fee_on_output);
     assert_eq!(settlement.treasury, new_treasury());
     let [post]: [_; 1] = posts.try_into().expect("one post state");
     let updated = PoolAccount::try_from(&post.account().data).expect("valid pool state");
     assert_eq!(
         (updated.pool.real_reserve0, updated.pool.real_reserve1),
-        (1048, 81)
+        (1050, 80)
     );
 }
 
@@ -910,7 +897,7 @@ fn token0_to_token1_exact_input_settles_all_three_transfers() {
     let participant_token1 = holding_ata(participant, token1, 0);
     let pool_token0 = holding_ata(pool_id, token0, 800);
     let pool_token1 = holding_ata(pool_id, token1, 100);
-    let treasury_token0 = ata(new_treasury(), token0, Account::default());
+    let treasury_token1 = ata(new_treasury(), token1, Account::default());
 
     let (posts, calls) = process_instruction(
         vec![
@@ -921,7 +908,7 @@ fn token0_to_token1_exact_input_settles_all_three_transfers() {
             pool_token0.clone(),
             pool_token1.clone(),
             participant_token1.clone(),
-            treasury_token0.clone(),
+            treasury_token1.clone(),
             trusted_clock(41),
         ],
         Instruction::SwapExactInput {
@@ -938,7 +925,7 @@ fn token0_to_token1_exact_input_settles_all_three_transfers() {
     let updated = PoolAccount::try_from(&post.account().data).expect("valid pool state");
     assert_eq!(
         (updated.pool.real_reserve0, updated.pool.real_reserve1),
-        (1048, 81)
+        (1050, 80)
     );
     assert_eq!(calls.len(), 3, "input, protocol fee, and output transfers");
     for call in &calls {
@@ -976,19 +963,19 @@ fn token0_to_token1_exact_input_settles_all_three_transfers() {
                 participant,
                 participant_token0.account_id,
                 pool_token0.account_id,
-                248
-            ),
-            (
-                participant,
-                participant_token0.account_id,
-                treasury_token0.account_id,
-                2,
+                250
             ),
             (
                 pool_id,
                 pool_token1.account_id,
                 participant_token1.account_id,
                 19
+            ),
+            (
+                pool_id,
+                pool_token1.account_id,
+                treasury_token1.account_id,
+                1
             ),
         ]
     );
@@ -1019,8 +1006,7 @@ fn exact_output_handler_caps_fee_inclusive_input_in_the_reverse_direction() {
             program_owner: CURVE_PROGRAM_ID,
             data: Data::from(&Config {
                 admin: new_admin(),
-                pool_fee_bps: 1_000,
-                protocol_fee_bps: 0,
+                protocol_fee_bps: 1_000,
                 treasury: new_treasury(),
             }),
             ..Account::default()
@@ -1036,10 +1022,10 @@ fn exact_output_handler_caps_fee_inclusive_input_in_the_reverse_direction() {
         (
             settlement.amount_in,
             settlement.amount_out,
-            settlement.pool_fee,
             settlement.protocol_fee,
+            settlement.raw_amount_out,
         ),
-        (28, 200, 3, 0)
+        (28, 200, 3, 200)
     );
 }
 
@@ -1074,8 +1060,7 @@ fn exact_output_dispatch_settles_fee_inclusive_input_and_requested_output_atomic
             program_owner: CURVE_PROGRAM_ID,
             data: Data::from(&Config {
                 admin: new_admin(),
-                pool_fee_bps: 1_000,
-                protocol_fee_bps: 0,
+                protocol_fee_bps: 1_000,
                 treasury: new_treasury(),
             }),
             ..Account::default()
@@ -1110,12 +1095,12 @@ fn exact_output_dispatch_settles_fee_inclusive_input_and_requested_output_atomic
     let updated = PoolAccount::try_from(&post.account().data).expect("valid pool state");
     assert_eq!(
         (updated.pool.real_reserve0, updated.pool.real_reserve1),
-        (600, 128)
+        (600, 125)
     );
     assert_eq!(
         calls.len(),
-        2,
-        "retained input and requested output transfers"
+        3,
+        "effective collateral, protocol fee, and requested output transfers"
     );
     let amounts: Vec<u128> = calls
         .iter()
@@ -1128,17 +1113,22 @@ fn exact_output_dispatch_settles_fee_inclusive_input_and_requested_output_atomic
             amount
         })
         .collect();
-    assert_eq!(amounts, vec![28, 200]);
+    assert_eq!(amounts, vec![25, 3, 200]);
     assert_eq!(calls[0].pre_states[0].account_id, participant);
     assert_eq!(
         calls[0].pre_states[1].account_id,
         participant_token1.account_id
     );
     assert_eq!(calls[0].pre_states[2].account_id, pool_token1.account_id);
-    assert_eq!(calls[1].pre_states[0].account_id, pool_id);
-    assert_eq!(calls[1].pre_states[1].account_id, pool_token0.account_id);
+    assert_eq!(calls[1].pre_states[0].account_id, participant);
     assert_eq!(
-        calls[1].pre_states[2].account_id,
+        calls[1].pre_states[1].account_id,
+        participant_token1.account_id
+    );
+    assert_eq!(calls[2].pre_states[0].account_id, pool_id);
+    assert_eq!(calls[2].pre_states[1].account_id, pool_token0.account_id);
+    assert_eq!(
+        calls[2].pre_states[2].account_id,
         participant_token0.account_id
     );
 }
@@ -1149,7 +1139,6 @@ fn every_instruction_survives_the_guest_wire_format() {
     let instructions = [
         Instruction::UpdateConfig {
             admin: new_admin(),
-            pool_fee_bps: 150,
             protocol_fee_bps: 100,
             treasury: new_treasury(),
         },

@@ -17,6 +17,10 @@ risc0-zkvm = { version = "3.0.5", default-features = false, features = ["std"] }
 # of a surprise in GTM-509. The `curve.rs` shim that uses it lands in GTM-509.
 curve-core = { path = "../../crates/curve-core" }
 factory-core = { path = "../../crates/factory-core" }
+private-flow-core = { path = "../../crates/private-flow-core" }
+associated_token_account_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a", default-features = false }
+authenticated_transfer_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a", default-features = false }
+token_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a", default-features = false }
 
 # Part of program identity: the risc0 image ID is computed over the
 # release-stripped binary, so every build that must reproduce a program id has
