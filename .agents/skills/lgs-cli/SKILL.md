@@ -1,6 +1,7 @@
 ---
 name: lgs-cli
 description: Use for the `lgs` / `logos-scaffold` CLI as a whole — bootstrap a project, run setup/build/deploy/localnet/wallet/doctor/report, diagnose CLI errors, or adopt scaffold in an existing project. Covers the full CLI surface, the `.scaffold/` state layout, and error → recovery patterns. Entry point that routes into `lez-template`, `lez-framework-template`, or `basecamp` once project context is identified.
+alwaysApply: false
 ---
 
 # Using `logos-scaffold`

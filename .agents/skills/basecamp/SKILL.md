@@ -1,6 +1,7 @@
 ---
 name: basecamp
 description: Use when running any `lgs basecamp …` subcommand or working on a Logos module project (a project that builds `.lgx` artefacts via `flake.nix#packages.<system>.lgx`). Covers `setup` / `modules` / `install` / `launch` / `develop` / `build` / `build-portable` / `run` / `doctor` / `paths` / `docs`, the `[modules]` schema, per-profile XDG isolation under `.scaffold/basecamp/profiles/{alice,bob}/`, clean-slate launch semantics, two-instance p2p dogfooding, and AppImage-targeted portable builds. Activates additionally on presence of `[modules]` in `scaffold.toml` or `.scaffold/basecamp/profiles/`. Independent of template skills.
+alwaysApply: false
 ---
 
 # Basecamp Integration

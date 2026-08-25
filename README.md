@@ -4,6 +4,18 @@ A one-week proof of concept for [Logos RFP-015](https://github.com/logos-co/rfp/
 
 The deliverable is a deployable curve program, a factory that mints a fixed-supply launch token and applies launch policy, an SDK boundary, a CLI, and a reviewer walkthrough. The curve remains a neutral bounded AMM; the factory owns token-launch supply and settlement policy. Read [CONTEXT.md](CONTEXT.md) for the vocabulary and crate map, and [docs/adr](docs/adr) for the design decisions.
 
+## Agent skills
+
+The canonical agent skills are tracked only in `.agents/skills`. To enable native
+discovery in Claude Code and Cursor, run:
+
+```bash
+./verify/sync-agent-skills.sh
+```
+
+Run the same command again after `lgs init` if it regenerates either native
+discovery directory.
+
 ## Run the reviewer walkthrough
 
 Prerequisites are Rust (the pinned toolchain in `rust-toolchain.toml`), `jq`, and scaffold `lgs` v0.3.0:
