@@ -1,0 +1,124 @@
+{
+  "version": "0.1.0",
+  "name": "private_buy",
+  "instructions": [
+    {
+      "name": "execute",
+      "accounts": [
+        {
+          "name": "private_source",
+          "writable": false,
+          "signer": true,
+          "init": false
+        },
+        {
+          "name": "transient",
+          "writable": false,
+          "signer": true,
+          "init": false
+        },
+        {
+          "name": "collateral_definition",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "launch_definition",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "transient_collateral_ata",
+          "writable": true,
+          "signer": false,
+          "init": true
+        },
+        {
+          "name": "transient_token_ata",
+          "writable": true,
+          "signer": false,
+          "init": true
+        },
+        {
+          "name": "pool",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "config",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "pool_collateral_ata",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "pool_token_ata",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "treasury_collateral_ata",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "clock",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "private_destination",
+          "writable": true,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "curve_program_id",
+          "type": "program_id"
+        },
+        {
+          "name": "token_program_id",
+          "type": "program_id"
+        },
+        {
+          "name": "ata_program_id",
+          "type": "program_id"
+        },
+        {
+          "name": "native_transfer_program_id",
+          "type": "program_id"
+        },
+        {
+          "name": "amount_out",
+          "type": "u128"
+        },
+        {
+          "name": "max_collateral_in",
+          "type": "u128"
+        },
+        {
+          "name": "gas_reserve",
+          "type": "u128"
+        },
+        {
+          "name": "collateral_definition_id",
+          "type": "account_id"
+        }
+      ]
+    }
+  ],
+  "instruction_type": "private_flow_core::PrivateBuyInstruction"
+}
