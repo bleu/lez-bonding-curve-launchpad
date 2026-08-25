@@ -12,7 +12,6 @@ pub fn update_config(
     config: AccountWithMetadata,
     authority: AccountWithMetadata,
     admin: AccountId,
-    pool_fee_bps: u16,
     protocol_fee_bps: u16,
     treasury: AccountId,
     curve_program_id: ProgramId,
@@ -41,12 +40,9 @@ pub fn update_config(
         "Authority is not the config admin"
     );
 
-    let total_fee_bps = pool_fee_bps
-        .checked_add(protocol_fee_bps)
-        .expect("Combined fee rate exceeds u16");
     assert!(
-        total_fee_bps <= MAX_FEE_BPS,
-        "Combined fee rate exceeds 10,000 basis points"
+        protocol_fee_bps <= MAX_FEE_BPS,
+        "Protocol fee exceeds 10,000 basis points"
     );
     assert_ne!(
         admin,
@@ -62,7 +58,6 @@ pub fn update_config(
     let mut config_post = config.account;
     config_post.data = Data::from(&Config {
         admin,
-        pool_fee_bps,
         protocol_fee_bps,
         treasury,
     });

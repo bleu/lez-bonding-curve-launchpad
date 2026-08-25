@@ -3362,6 +3362,8 @@ dependencies = [
  "lee",
  "lee_core",
  "pool",
+ "private-flow-core",
+ "programs",
  "sequencer_service_rpc",
  "serde",
  "wallet",
@@ -5417,6 +5419,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "85eae3c4ed2f50dcfe72643da4befc30deadb458a9b590d720cde2f2b1e97da9"
 dependencies = [
  "zerocopy",
+]
+
+[[package]]
+name = "private-flow-core"
+version = "0.1.0"
+dependencies = [
+ "lee_core",
+ "serde",
 ]
 
 [[package]]

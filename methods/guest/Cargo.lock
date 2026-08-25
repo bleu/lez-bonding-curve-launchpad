@@ -266,6 +266,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "authenticated_transfer_core"
+version = "0.1.0"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?rev=a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a#a58fbce2ff48c58b7bb5001b1a27e64b9596ee3a"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1082,10 +1090,14 @@ dependencies = [
 name = "launchpad_programs"
 version = "0.1.0"
 dependencies = [
+ "associated_token_account_core",
+ "authenticated_transfer_core",
  "curve-core",
  "factory-core",
  "lee_core",
+ "private-flow-core",
  "risc0-zkvm",
+ "token_core",
 ]
 
 [[package]]
@@ -1310,6 +1322,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "85eae3c4ed2f50dcfe72643da4befc30deadb458a9b590d720cde2f2b1e97da9"
 dependencies = [
  "zerocopy",
+]
+
+[[package]]
+name = "private-flow-core"
+version = "0.1.0"
+dependencies = [
+ "lee_core",
+ "serde",
 ]
 
 [[package]]

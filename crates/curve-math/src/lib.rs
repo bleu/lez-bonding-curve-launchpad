@@ -5,9 +5,9 @@
 //! direction at every call site is visible at the call rather than inferred from
 //! context.
 //!
-//! These are honest quotes over the invariant product supplied by the caller. The
-//! state machine in `crates/pool` supplies the current reserve product so rounding
-//! surplus is not spendable, and rejects zero-amount trades before quoting.
+//! These are honest quotes over the immutable creation-time invariant product
+//! supplied by the caller. The state machine in `crates/pool` retains that `k` for
+//! its lifetime and rejects zero-cost exact-output transitions before settlement.
 //!
 //! The u128 bound argument lives in `docs/adr/0004`.
 
@@ -125,6 +125,23 @@ mod tests {
     fn exact_output_rounds_input_up() {
         // Q = 100: 100_000 / 900 - 100 = 11.11, so the participant pays 12.
         assert_eq!(exact_output_amount_in_ceil(100, 1000, 100_000, 100), Ok(12));
+    }
+
+    #[test]
+    fn exact_output_input_is_the_smallest_integer_that_reaches_the_requested_output() {
+        for amount_out in [1, 100, 200, 999] {
+            let amount_in = exact_output_amount_in_ceil(100, 1_000, 100_000, amount_out)
+                .expect("the requested output is below the virtual reserve");
+            let produced = exact_input_amount_out_floor(100, 1_000, 100_000, amount_in)
+                .expect("the inverse input is valid");
+            assert!(produced >= amount_out);
+
+            if amount_in != 0 {
+                let previous = exact_input_amount_out_floor(100, 1_000, 100_000, amount_in - 1)
+                    .expect("one less input is still a valid curve point");
+                assert!(previous < amount_out);
+            }
+        }
     }
 
     #[test]
