@@ -2,9 +2,8 @@
 
 Status: amended by ADR 0005
 
-ADR 0005 supersedes the claims that creation computes the only reserve product and
-that later trades may consume rounding surplus. The creation bound and checked
-trade arithmetic remain accepted.
+ADR 0005 supersedes the earlier fee decision. This ADR remains authoritative for
+the creation bound and checked trade arithmetic.
 
 ## Context
 
@@ -24,11 +23,15 @@ Constant-product implementations often need 256-bit intermediates because multip
 
 `Pool::create` rejects either initial virtual reserve at or above 2^64 (`VIRTUAL_RESERVE_BOUND` in `crates/pool`) and rejects zero virtual reserves. The initial multiplication is `k = virtual_reserve0 * virtual_reserve1`. Two factors below 2^64 produce a value below 2^128, and `k` never changes.
 
-ADR 0005 requires later quotes to multiply the current virtual reserves. Virtual reserves may move past 2^64 after swaps, so every current-product and proposed-product multiplication is checked. A trade that would leave u128 rejects before mutation. Trade amounts remain untrusted u128 inputs, and every other operation is checked too.
+All later quotes use this stored creation-time `k`; they never recompute a live
+virtual-reserve product. Virtual reserves may move past 2^64 after swaps, so the
+implementation does not make multiplying them a transition precondition. Trade
+amounts remain untrusted `u128` inputs, and every reserve and quote operation is
+checked before mutation.
 
 ### Part 2 — pool-favouring rounding
 
-Every pricing path rounds `k / x` up. Therefore exact-input output is rounded down and exact-output input is rounded up. Each successful swap leaves `virtual_reserve0 * virtual_reserve1 >= k`; rounding drift lands on the pool's side. The state machine rejects zero requested input or output so callers cannot intentionally extract accumulated rounding surplus with a nominal zero trade.
+Every pricing path rounds `k / x` up. Therefore exact-input output is rounded down and exact-output input is rounded up. The stored `k` never changes; live reserves can contain integer rounding drift but that drift is not repriced as a new invariant. The state machine rejects zero requested input or output so callers cannot intentionally submit a nominal zero trade.
 
 The combined pool and protocol fee is separated from effective input before reserve pricing. The pool portion is then retained in the input reserve and the protocol portion leaves for treasury. For exact output, gross fee-inclusive input is the smallest integer whose post-fee amount covers the conservatively rounded effective quote.
 

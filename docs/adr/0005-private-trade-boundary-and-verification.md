@@ -33,47 +33,33 @@ The user-facing privacy claim for this PoC is **anonymous participation**:
   Those values may be inferred from the public curve transition even when the
   underlying transfer wrapper supports variable privacy.
 
-`launchpad-client` owns the private trade lifecycle. When private buy and sell
-operations land, it must:
+`launchpad-client` owns the private-buy lifecycle. It:
 
-1. load the deployed curve ELF and every ELF for a program reached through a
-   chained call;
-2. build the private proof with that complete dependency set;
-3. submit the transaction and sync the private account after confirmation; and
-4. re-shield received assets when the operation requires it.
+1. creates a fresh single-use public account A;
+2. builds one privacy-preserving transaction for `private_buy` with the curve,
+   native-transfer, token, and ATA guest binaries as dependencies;
+3. chains, in order: native gas deshield to A, collateral ATA creation,
+   launch-token ATA creation, collateral deshield, exact-output buy, and
+   re-shield of the bought launch tokens to private destination B; and
+4. returns the transaction hash plus A and B for callers to sync or inspect.
 
 Callers must not locate or supply well-known dependency binaries by hand. The
 SDK exposes lifecycle operations, not proof-builder plumbing.
 
 ## Verification
 
-The current repository has no buy or sell handler, so these are acceptance
-criteria for the issues that add those operations rather than executable tests
-today:
-
-1. A public localnet buy and sell establish the expected sale, participant,
-   treasury and reserve post-states.
-2. The equivalent private buy and sell succeed with the SDK-provided dependency
-   set, followed by `sync-private`; the private balance and received assets are
-   usable afterwards.
-3. Omitting a chained-program ELF fails before submission with an actionable
-   dependency error. This guards against a public-only happy path.
-4. An observer-facing assertion records the public sale transition and confirms
-   that it contains no private participant account ID or private balance.
-5. The same assertion records which public fields permit amount inference, so a
-   future UI or README cannot overstate confidentiality.
-
-The first four run against a local LEZ sequencer; the last is a documented
-privacy review beside the test output. The end-to-end script supplements, but
-does not replace, the pure `curve-math` tests, the `sale` state-machine property
-test, and the `curve-core` account/authorization adapter tests.
+`cargo check --manifest-path methods/guest/Cargo.toml --bin private_buy`
+compiles the guest against the pinned LEZ programs. SDK and CLI tests enforce a
+nonzero gas reserve, a nonzero collateral cap/output, private source and
+destination inputs, and the router-binary argument. This PoC does not claim
+localnet or live submission evidence.
 
 ## Consequences
 
 The SDK has an explicit responsibility beyond transaction submission, and its
-private-flow API must carry a complete program-dependency manifest. This is a
-larger client surface than public trades, but it keeps LEZ proof mechanics out
-of the CLI and makes private failures reproducible.
+private-flow API carries a complete program-dependency manifest. The router
+enforces the re-shield call inside the same proof composition; callers cannot
+turn this API into separate funding and purchase transactions.
 
 Public observability remains a design constraint. Confidential trade amounts
 would require a different sale-state and settlement design, not merely a
