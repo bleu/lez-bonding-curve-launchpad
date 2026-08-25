@@ -1,4 +1,5 @@
 ---
+name: lez-template
 description: Use when working inside a project scaffolded with the bare LEZ template (`lgs new` default — raw Rust + risc0 guest programs, no framework macros). Identify by scaffold.toml without `framework = "lez-framework"`, presence of `methods/guest/src/bin/*.rs`, and absence of `idl/` + `crates/lez-client-gen/`.
 alwaysApply: false
 ---

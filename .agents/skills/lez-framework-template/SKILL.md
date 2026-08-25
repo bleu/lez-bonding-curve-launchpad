@@ -1,4 +1,5 @@
 ---
+name: lez-framework-template
 description: Use when working inside a project scaffolded with scaffold's lez-framework template — Anchor-on-Solana parallel for LEZ with #[lez_program] / #[instruction] / #[account(...)] macros and auto-generated IDL. Identify by scaffold.toml framework = "lez-framework", crates/lez-client-gen/, idl/, and #[lez_program] in the source.
 alwaysApply: false
 ---
