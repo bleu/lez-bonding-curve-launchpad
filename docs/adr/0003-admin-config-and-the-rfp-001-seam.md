@@ -1,9 +1,9 @@
 # 0003 — Admin config: one instruction, a genesis constant, and rotation as the RFP-001 seam
 
-Status: amended by ADR 0005
+Status: singleton, genesis-admin, and admin-lifecycle decisions superseded by [ADR 0008](0008-permissionless-namespaces.md); fee decisions amended by ADR 0005
 
 ADR 0005 supersedes this ADR's single `fee_bps`, collateral-only fee, and
-round-down decisions. The admin lifecycle and live-config decisions remain accepted.
+round-down decisions. The live-config decision remains accepted within each namespace.
 
 ## Context
 

@@ -24,10 +24,10 @@ Prerequisites are Rust (the pinned toolchain in `rust-toolchain.toml`), `jq`, an
 cargo install --git https://github.com/logos-co/scaffold --tag v0.3.0 --locked --bins
 ```
 
-Before a real walkthrough, replace [`GENESIS_ADMIN`](crates/curve-core/src/lib.rs) with a public wallet account you control and rebuild: the key is compiled into the curve image. Create or identify that account with `lgs wallet -- account new public`, then run the canonical walkthrough from a clean checkout:
+Before a walkthrough, create or identify a public wallet account with `lgs wallet -- account new public`. That account authorizes namespace creation; no key is compiled into the program. Run:
 
 ```bash
-GENESIS_ADMIN_ACCOUNT=Public/<configured-genesis-admin-account> ./verify/e2e.sh
+NAMESPACE_ADMIN_ACCOUNT=Public/<namespace-creator-account> ./verify/e2e.sh
 ```
 
 The script resets only this project's managed localnet and wallet, builds and deploys both guests, configures the curve, creates a launch, exercises rejected and successful buys plus a sell, exhausts the sale reserve, then checks auto-close, creator unlock, and withdrawal. It stops the localnet it started and refuses to touch a foreign listener. It is a manual integration harness, not evidence used by this PoC review.
@@ -79,18 +79,21 @@ this PoC or explicitly deferred.
 | RFP-015 requirement | Implementation location | Verification evidence | Status |
 | --- | --- | --- | --- |
 | F1: deterministic two-way curve, integer pricing, reserve backing, inverse quote | `crates/curve-math`, `crates/pool`, `crates/curve-core`, `crates/launchpad-client` | math, buy/sell collateral-fee unit tests, dispatcher settlement tests, quote tests, and 512-case state-machine property tests | **implemented and test-covered** |
-| F2: creator-defined `D`, optional `R`, virtual reserves, distinct allocations | `crates/factory-core`, factory `CreateFactoryPool` | factory tests cover fixed supply and reject `Vt <= D` | **implemented and test-covered** |
+| F2: immutable namespace, creator-defined `D`, optional `R`, virtual reserves, distinct allocations | `crates/factory-core`, factory `CreateFactoryPool` | factory tests cover fixed supply and reject `Vt <= D` | **implemented and test-covered** |
 | F3: public and deshield→trade→re-shield participation | `private-flow-core`, `methods/guest/src/bin/private_buy.rs`, `launchpad-client`, CLI | guest compile check; client/CLI validation tests; router chains native funding, collateral deshield, buy, and re-shield in one private transaction | **implemented and statically test-covered**; no live sequencer evidence claimed |
 | F4: automatic close when sale reserve exhausts | factory token0 depletion policy; `Pool::close_if_depleted` | pool/factory lifecycle tests | **implemented and test-covered** |
 | F5: post-close collateral and `R` settlement | `WithdrawFactoryProceeds` in `factory-core` | factory chained-call tests | **implemented and test-covered** |
 | F6: buy/sell slippage protection | exact-output/input pool operations and CLI caps/floors | unit, client, and CLI parsing tests | **implemented and test-covered** |
 | F7: ATA custody | `curve-core` create/swap/lifecycle adapters | adapter tests verify ATA derivation and settlement accounts | **implemented and test-covered** |
+| F8–F10: live collateral fees, permissionless namespaces, isolated accounts | `curve-core`, `factory-core` | namespace/admin/fee-update and mismatched-account tests | **implemented and test-covered** at the host adapter boundary |
+| U11–U12: namespace selection, creation, admin transfer/renunciation, fee/treasury display | `launchpad-client`, CLI | client/CLI and core tests | **implemented** in SDK/CLI; mini-app, listings, history and analytics remain outside this PoC |
 | U01: SDK lifecycle for public and private users | `launchpad-client` | public invocation/quote tests; private request validation and router composition compile check | **implemented and test-covered** at the SDK/guest construction boundary |
 | U02, U04–U08: mini-app, confirmation, privacy UX, analytics | — | — | **not covered** |
 | U03: essential creator/participant CLI | `cli/src/main.rs` | CLI parsing tests for `configure`, `create-sale`, `price`, `buy`, `buy-with-collateral`, `sell`, `status`, `unlock`, and `withdraw`; status reports configured sale quantity, tokens sold, and reserves | **implemented and test-covered** |
 | U09: SPEL-generated IDL | `idl-src/`, `idl/`, `verify/check-idl.sh` | project-pinned `spel generate-idl` reproduces all three checked-in JSON interfaces | **implemented and test-covered** |
 | U10: actionable rejected-buy errors | CLI JSON error categories and pool errors | CLI and pool error tests | **implemented and test-covered** |
 | R1–R2: concurrent-safe invariant/accounting and atomic failed buy | checked state transitions; curve account adapters | property suite checks rejected transition atomicity; adapter tests | **implemented and test-covered** at the state-machine boundary, not under adversarial concurrent submissions |
+| R4–R6: exact fee accounting, execution-time updates, namespace isolation | `pool`, `curve-core` | fee conservation, two-namespace isolation, and quote-to-execution slippage tests | **implemented and test-covered** at the host adapter boundary |
 | R3: atomic auto-close, no later buy | factory closure policy | pool/factory lifecycle tests | **implemented and test-covered** |
 | P1–P2: one-transaction buy/close | chained-call adapters | adapter/factory tests inspect chained calls | **implemented and test-covered** as construction behavior, not performance measurement |
 | P3: documented CU costs and testnet version | — | — | **not covered** |
@@ -149,15 +152,37 @@ policy; it is not enforced by the pool.
 
 Handlers live in the host workspace under `crates/`, and each risc0 guest in `methods/guest/src/bin/` is a dispatch shim over its core crate. `docs/adr/0002` explains why that differs from the in-tree programs.
 
-## Admin authority
+## Namespace administration
 
-The protocol fee rate and the treasury owner live in a singleton config PDA, read live by every swap. One instruction manages it: `update_config` creates the config on the first call and replaces it whole after, gated on the admin key. The first call must be signed by the genesis admin, a constant compiled into `curve-core`. Replace it with your key before the deploy build; it is part of the risc0 image ID, so changing it produces a different program. Deployment then has one required step: call `update_config` once before any swap, because swaps fail while the config does not exist.
+This PoC targets the namespace requirements proposed in [Logos PR #204](https://github.com/logos-co/rfp/pull/204). One deployment hosts independent configurations. The namespace identity is the public key that signs its first `configure` call. An operator can create further identities and assign the same admin to them. The identity stays fixed after admin transfer or renunciation; it is not a deployment-wide authority.
 
-RFP-015 sources the admin authority from the RFP-001 library, which this proof of concept does not build. The seam it plugs into is the admin field itself: rotate the admin to the key that library controls and it holds the gate from then on, with no code change and no redeploy. Rotation is single-step, so a rotation to a wrong key is unrecoverable — check the key before you sign.
+Every command requires `--namespace Public/<identity>`. The SDK takes the namespace explicitly, including the private-buy builder. Sale salts are local to a namespace. Namespace selection scopes factory, token, escrow, pool, and reserve addresses. The curve resolves swap fees and treasury from the pool's stored namespace and rejects mismatched configurations or reserve accounts.
+
+```bash
+# Create a namespace. Its identity must authorize this first call.
+launchpad --namespace Public/<identity> configure \
+  --curve-program-path <curve.bin> --admin Public/<identity> \
+  --protocol-fee-bps 100 --treasury Public/<treasury>
+
+# Change settings or transfer administration using the current admin.
+launchpad --namespace Public/<identity> configure \
+  --curve-program-path <curve.bin> --admin Public/<current-admin> \
+  --new-admin Public/<next-admin> --protocol-fee-bps 50 --treasury Public/<treasury>
+
+launchpad --namespace Public/<identity> namespace-info --curve-program-path <curve.bin>
+launchpad --namespace Public/<identity> renounce-admin \
+  --curve-program-path <curve.bin> --admin Public/<current-admin>
+```
+
+`configure` replaces the fee, treasury, and admin together; omit `--new-admin` to retain the signing admin. Transfer is single-step. Renunciation is permanent: it disables updates and transfers while retaining the last fee and treasury for trading. The RFP-001 library remains a future integration; this PoC implements its admin behavior locally.
+
+Zero fees are accepted. The 10,000-basis-point denominator is an arithmetic boundary, not a commercial tier or policy cap; a buy whose fee consumes its input is rejected. Swaps read the current namespace configuration at execution, and enforce the trader's net-output floor or gross-input cap. `price --sell --tokens <amount>` shows raw collateral, fee, and net proceeds; price/status output includes the namespace, fee rate, and treasury.
+
+This changes the wire interfaces and account derivation. Rebuild and redeploy the PoC and create fresh namespaces and sales; it does not migrate accounts from older program images. [ADR 0008](docs/adr/0008-permissionless-namespaces.md) supersedes the singleton/genesis-admin decisions in ADR 0003.
 
 ## Ownership and privacy boundary
 
-Pool ownership is deliberately public. `create_pool` stores its authorized owner in pool state and scopes the pool PDA by the ordered token pair and owner. Direct creators may own pools themselves; the factory path supplies a factory-owned PDA so close and withdrawal must pass through factory policy. Creation verifies the owner's source ATAs, creates both pool-owned reserve ATAs, and atomically transfers both initial real reserves.
+Pool ownership is deliberately public. `create_pool` stores its authorized owner in pool state and scopes the pool PDA by namespace, ordered token pair, and owner. Direct creators may own pools themselves; the factory path supplies a factory-owned PDA so close and withdrawal must pass through factory policy. Creation verifies the owner's source ATAs, creates both pool-owned reserve ATAs, and atomically transfers both initial real reserves.
 
 Creator identity and privacy are launch policy, not AMM state. The future factory may commit to a private creator authority while exposing only its own owner PDA to the neutral pool.
 

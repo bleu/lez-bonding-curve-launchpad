@@ -8,16 +8,24 @@
 pub mod curve {
     #[instruction]
     pub fn update_config(
-        #[account(mut, pda = literal("config"))] config: AccountWithMetadata,
+        #[account(mut, pda = arg("namespace"))] config: AccountWithMetadata,
         #[account(signer)] authority: AccountWithMetadata,
+        namespace: AccountId,
         admin: AccountId,
         protocol_fee_bps: u16,
         treasury: AccountId,
     ) {}
 
     #[instruction]
+    pub fn renounce_admin(
+        #[account(mut, pda = arg("namespace"))] config: AccountWithMetadata,
+        #[account(signer)] authority: AccountWithMetadata,
+        namespace: AccountId,
+    ) {}
+
+    #[instruction]
     pub fn create_pool(
-        #[account(init, pda = [literal("pool"), account("token0_definition"), account("token1_definition"), arg("owner")])]
+        #[account(init, pda = [account("token0_definition"), account("token1_definition"), arg("owner"), arg("namespace")])]
         pool: AccountWithMetadata,
         #[account(signer)] owner_authority: AccountWithMetadata,
         token0_definition: AccountWithMetadata,
@@ -27,6 +35,8 @@ pub mod curve {
         #[account(init)] pool_token0_ata: AccountWithMetadata,
         #[account(init)] pool_token1_ata: AccountWithMetadata,
         clock: AccountWithMetadata,
+        config: AccountWithMetadata,
+        namespace: AccountId,
         token0_amount: u128,
         token1_amount: u128,
         virtual_reserve0: u128,

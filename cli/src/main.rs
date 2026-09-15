@@ -65,6 +65,9 @@ struct Cli {
     /// Emit stable machine-readable output.
     #[arg(long, global = true)]
     json: bool,
+    /// Namespace identity (the public key that authorized its creation).
+    #[arg(long, global = true)]
+    namespace: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -87,8 +90,22 @@ enum Command {
     Status(LaunchReadArgs),
     SaleInfo(LaunchReadArgs),
     Configure(ConfigArgs),
+    NamespaceInfo(NamespaceReadArgs),
+    RenounceAdmin(NamespaceAdminArgs),
 }
 
+#[derive(Debug, Args)]
+struct NamespaceReadArgs {
+    #[arg(long)]
+    curve_program_path: PathBuf,
+}
+#[derive(Debug, Args)]
+struct NamespaceAdminArgs {
+    #[arg(long)]
+    curve_program_path: PathBuf,
+    #[arg(long)]
+    admin: String,
+}
 #[derive(Debug, Args)]
 struct CreateSaleArgs {
     #[command(flatten)]
@@ -124,7 +141,7 @@ struct CreateSaleArgs {
 
 #[derive(Debug, Clone, Args)]
 struct LaunchArgs {
-    /// Explicit 32-byte hexadecimal launch namespace.
+    /// Explicit 32-byte hexadecimal sale salt within the selected namespace.
     #[arg(long, value_parser = parse_launch_salt)]
     launch_salt: [u8; 32],
 }
@@ -230,6 +247,9 @@ struct SellArgs {
 #[derive(Debug, Args)]
 #[command(group(clap::ArgGroup::new("price-input").required(true).args(["tokens", "collateral"]))) ]
 struct PriceArgs {
+    /// Quote selling launch tokens for net collateral; requires --tokens.
+    #[arg(long, requires = "tokens", conflicts_with = "collateral")]
+    sell: bool,
     #[command(flatten)]
     launch: LaunchReadArgs,
     #[arg(long)]
@@ -241,6 +261,9 @@ struct PriceArgs {
 
 #[derive(Debug, Args)]
 struct ConfigArgs {
+    /// Transfer administration to this key; defaults to the signing admin.
+    #[arg(long)]
+    new_admin: Option<String>,
     #[arg(long)]
     admin: String,
     #[arg(long, default_value_t = 0)]
@@ -267,6 +290,9 @@ struct SubmittedLaunch {
 
 #[derive(Serialize)]
 struct SaleSnapshot {
+    namespace: String,
+    protocol_fee_bps: u16,
+    treasury: String,
     launch_salt: String,
     factory_program: String,
     pool: String,
@@ -285,6 +311,9 @@ struct SaleSnapshot {
 
 #[derive(Serialize)]
 struct PriceQuote {
+    namespace: String,
+    protocol_fee_bps: u16,
+    treasury: String,
     kind: &'static str,
     amount_in: u128,
     raw_amount_out: u128,
@@ -316,18 +345,48 @@ async fn main() {
 }
 
 async fn run(json: bool, cli: Cli) -> Result<()> {
+    let namespace = parse_account_id(cli.namespace.as_deref().ok_or_else(|| {
+        anyhow::anyhow!("--namespace is required; use the namespace creator public key")
+    })?)?;
     match cli.command {
-        Command::CreateSale(args) => create_sale(json, args).await,
-        Command::Close(args) => close_factory_pool(json, args).await,
-        Command::Withdraw(args) => withdraw_factory_proceeds(json, args).await,
-        Command::Claim(args) => claim_creator_allocation(json, args).await,
-        Command::Buy(args) => buy(json, args).await,
-        Command::BuyWithCollateral(args) => buy_with_collateral(json, args).await,
-        Command::PrivateBuy(args) => private_buy(args).await,
-        Command::Sell(args) => sell(json, args).await,
-        Command::Price(args) => price(json, args).await,
-        Command::Status(args) | Command::SaleInfo(args) => sale_snapshot(json, args).await,
-        Command::Configure(args) => configure(json, args).await,
+        Command::CreateSale(args) => create_sale(namespace, json, args).await,
+        Command::Close(args) => close_factory_pool(namespace, json, args).await,
+        Command::Withdraw(args) => withdraw_factory_proceeds(namespace, json, args).await,
+        Command::Claim(args) => claim_creator_allocation(namespace, json, args).await,
+        Command::Buy(args) => buy(namespace, json, args).await,
+        Command::BuyWithCollateral(args) => buy_with_collateral(namespace, json, args).await,
+        Command::PrivateBuy(args) => private_buy(namespace, args).await,
+        Command::Sell(args) => sell(namespace, json, args).await,
+        Command::Price(args) => price(namespace, json, args).await,
+        Command::Status(args) | Command::SaleInfo(args) => {
+            sale_snapshot(namespace, json, args).await
+        }
+        Command::Configure(args) => configure(namespace, json, args).await,
+        Command::NamespaceInfo(args) => {
+            let program = load_program(&args.curve_program_path)?;
+            let wallet = WalletCore::from_env()?;
+            let config = load_curve_config(namespace, &wallet, program.id()).await?;
+            println!(
+                "{}",
+                serde_json::json!({"namespace": namespace.to_string(), "admin": config.admin.to_string(), "protocol_fee_bps": config.protocol_fee_bps, "treasury": config.treasury.to_string()})
+            );
+            Ok(())
+        }
+        Command::RenounceAdmin(args) => {
+            let program = load_program(&args.curve_program_path)?;
+            let wallet = WalletCore::from_env()?;
+            let invocation = launchpad_client::build_renounce_admin_invocation(
+                namespace,
+                program.id(),
+                parse_account_id(&args.admin)?,
+            );
+            let hash = submit_public_invocation(&wallet, &program, invocation).await?;
+            println!(
+                "{}",
+                serde_json::json!({"namespace": namespace.to_string(), "transaction_hash": hex::encode(hash)})
+            );
+            Ok(())
+        }
     }
 }
 
@@ -352,13 +411,19 @@ fn classified(category: ErrorCategory) -> anyhow::Error {
     ClassifiedError { category }.into()
 }
 
-async fn configure(json: bool, args: ConfigArgs) -> Result<()> {
+async fn configure(namespace: lee::AccountId, json: bool, args: ConfigArgs) -> Result<()> {
     let curve_program = load_program(&args.curve_program_path)?;
     let admin = parse_account_id(&args.admin)?;
     let treasury = parse_account_id(&args.treasury)?;
     let invocation = launchpad_client::build_update_config_invocation(
+        namespace,
         curve_program.id(),
         admin,
+        args.new_admin
+            .as_deref()
+            .map(parse_account_id)
+            .transpose()?
+            .unwrap_or(admin),
         args.protocol_fee_bps,
         treasury,
     );
@@ -381,12 +446,17 @@ async fn configure(json: bool, args: ConfigArgs) -> Result<()> {
     Ok(())
 }
 
-async fn withdraw_factory_proceeds(json: bool, args: FactoryLifecycleArgs) -> Result<()> {
+async fn withdraw_factory_proceeds(
+    namespace: lee::AccountId,
+    json: bool,
+    args: FactoryLifecycleArgs,
+) -> Result<()> {
     let factory_program = load_program(&args.factory_program_path)?;
     let curve_program = load_program(&args.curve_program_path)?;
     let creator = parse_account_id(&args.creator)?;
     let collateral_definition = parse_account_id(&args.collateral_definition)?;
     let invocation = build_withdraw_factory_proceeds_invocation(
+        namespace,
         factory_program.id(),
         curve_program.id(),
         creator,
@@ -403,12 +473,13 @@ async fn withdraw_factory_proceeds(json: bool, args: FactoryLifecycleArgs) -> Re
     )
 }
 
-async fn price(json: bool, args: PriceArgs) -> Result<()> {
+async fn price(namespace: lee::AccountId, json: bool, args: PriceArgs) -> Result<()> {
     let factory_program = load_program(&args.launch.factory_program_path)?;
     let curve_program = load_program(&args.launch.curve_program_path)?;
     let collateral_definition = parse_account_id(&args.launch.collateral_definition)?;
     let wallet = WalletCore::from_env().context("opening the project wallet")?;
     let pool = load_factory_pool(
+        namespace,
         &wallet,
         factory_program.id(),
         curve_program.id(),
@@ -416,12 +487,13 @@ async fn price(json: bool, args: PriceArgs) -> Result<()> {
         collateral_definition,
     )
     .await?;
-    let config = load_curve_config(&wallet, curve_program.id()).await?;
+    let config = load_curve_config(namespace, &wallet, curve_program.id()).await?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .context("reading the current time")?
         .as_secs();
     let (kind, quote) = match (args.tokens, args.collateral) {
+        (Some(tokens), None) if args.sell => ("sell", quote_sell(&pool, &config, tokens, now)?),
         (Some(tokens), None) => ("buy", quote_buy(&pool, &config, tokens, now)?),
         (None, Some(collateral)) => (
             "buy",
@@ -430,6 +502,9 @@ async fn price(json: bool, args: PriceArgs) -> Result<()> {
         _ => anyhow::bail!("provide exactly one of --tokens or --collateral"),
     };
     let output = PriceQuote {
+        namespace: namespace.to_string(),
+        protocol_fee_bps: config.protocol_fee_bps,
+        treasury: config.treasury.to_string(),
         kind,
         amount_in: quote.amount_in,
         raw_amount_out: quote.raw_amount_out,
@@ -440,21 +515,33 @@ async fn price(json: bool, args: PriceArgs) -> Result<()> {
         println!("{}", serde_json::to_string(&output)?);
     } else {
         println!(
-            "{kind} quote: input={} raw_output={} output={} protocol_fee={}",
-            output.amount_in, output.raw_amount_out, output.amount_out, output.protocol_fee
+            "{kind} quote: namespace={} fee_bps={} treasury={} input={} raw_output={} output={} protocol_fee={}",
+            output.namespace,
+            output.protocol_fee_bps,
+            output.treasury,
+            output.amount_in,
+            output.raw_amount_out,
+            output.amount_out,
+            output.protocol_fee
         );
     }
     Ok(())
 }
 
-async fn sale_snapshot(json: bool, args: LaunchReadArgs) -> Result<()> {
+async fn sale_snapshot(namespace: lee::AccountId, json: bool, args: LaunchReadArgs) -> Result<()> {
     let factory_program = load_program(&args.factory_program_path)?;
     let curve_program = load_program(&args.curve_program_path)?;
     let collateral_definition = parse_account_id(&args.collateral_definition)?;
     let wallet = WalletCore::from_env().context("opening the project wallet")?;
-    let factory =
-        load_factory_state(&wallet, factory_program.id(), args.launch.launch_salt).await?;
+    let factory = load_factory_state(
+        namespace,
+        &wallet,
+        factory_program.id(),
+        args.launch.launch_salt,
+    )
+    .await?;
     let pool = load_factory_pool(
+        namespace,
         &wallet,
         factory_program.id(),
         curve_program.id(),
@@ -471,7 +558,11 @@ async fn sale_snapshot(json: bool, args: LaunchReadArgs) -> Result<()> {
         .sale_reserve
         .checked_sub(pool.pool.real_reserve0)
         .context("factory pool token reserve exceeds its configured sale quantity")?;
+    let config = load_curve_config(namespace, &wallet, curve_program.id()).await?;
     let snapshot = SaleSnapshot {
+        namespace: namespace.to_string(),
+        protocol_fee_bps: config.protocol_fee_bps,
+        treasury: config.treasury.to_string(),
         launch_salt: hex::encode(args.launch.launch_salt),
         factory_program: factory_program
             .id()
@@ -495,7 +586,10 @@ async fn sale_snapshot(json: bool, args: LaunchReadArgs) -> Result<()> {
         println!("{}", serde_json::to_string(&snapshot)?);
     } else {
         println!(
-            "sale {status}: pool={} sold={}/{} token_reserve={} collateral_reserve={}",
+            "sale {status}: namespace={} fee_bps={} treasury={} pool={} sold={}/{} token_reserve={} collateral_reserve={}",
+            snapshot.namespace,
+            snapshot.protocol_fee_bps,
+            snapshot.treasury,
             snapshot.pool,
             snapshot.tokens_sold,
             snapshot.sale_quantity,
@@ -506,14 +600,15 @@ async fn sale_snapshot(json: bool, args: LaunchReadArgs) -> Result<()> {
     Ok(())
 }
 
-async fn buy(json: bool, args: BuyArgs) -> Result<()> {
+async fn buy(namespace: lee::AccountId, json: bool, args: BuyArgs) -> Result<()> {
     let factory_program = load_program(&args.trade.factory_program_path)?;
     let curve_program = load_program(&args.trade.curve_program_path)?;
     let participant = parse_account_id(&args.trade.participant)?;
     let collateral_definition = parse_account_id(&args.trade.collateral_definition)?;
     let wallet = WalletCore::from_env().context("opening the project wallet")?;
-    let config = load_curve_config(&wallet, curve_program.id()).await?;
+    let config = load_curve_config(namespace, &wallet, curve_program.id()).await?;
     let pool = load_factory_pool(
+        namespace,
         &wallet,
         factory_program.id(),
         curve_program.id(),
@@ -533,6 +628,7 @@ async fn buy(json: bool, args: BuyArgs) -> Result<()> {
         return Err(classified(ErrorCategory::SlippageFloor));
     }
     let invocation = build_buy_invocation(
+        namespace,
         factory_program.id(),
         curve_program.id(),
         participant,
@@ -553,14 +649,19 @@ async fn buy(json: bool, args: BuyArgs) -> Result<()> {
     )
 }
 
-async fn buy_with_collateral(json: bool, args: BuyWithCollateralArgs) -> Result<()> {
+async fn buy_with_collateral(
+    namespace: lee::AccountId,
+    json: bool,
+    args: BuyWithCollateralArgs,
+) -> Result<()> {
     let factory_program = load_program(&args.trade.factory_program_path)?;
     let curve_program = load_program(&args.trade.curve_program_path)?;
     let participant = parse_account_id(&args.trade.participant)?;
     let collateral_definition = parse_account_id(&args.trade.collateral_definition)?;
     let wallet = WalletCore::from_env().context("opening the project wallet")?;
-    let config = load_curve_config(&wallet, curve_program.id()).await?;
+    let config = load_curve_config(namespace, &wallet, curve_program.id()).await?;
     let pool = load_factory_pool(
+        namespace,
         &wallet,
         factory_program.id(),
         curve_program.id(),
@@ -577,6 +678,7 @@ async fn buy_with_collateral(json: bool, args: BuyWithCollateralArgs) -> Result<
         return Err(classified(ErrorCategory::SlippageFloor));
     }
     let invocation = build_buy_with_collateral_invocation(
+        namespace,
         factory_program.id(),
         curve_program.id(),
         participant,
@@ -597,7 +699,7 @@ async fn buy_with_collateral(json: bool, args: BuyWithCollateralArgs) -> Result<
     )
 }
 
-async fn private_buy(args: PrivateBuyArgs) -> Result<()> {
+async fn private_buy(namespace: lee::AccountId, args: PrivateBuyArgs) -> Result<()> {
     let factory_program = load_program(&args.factory_program_path)?;
     let curve_program = load_program(&args.curve_program_path)?;
     let private_buy_program = load_program(&args.private_buy_program_path)?;
@@ -605,8 +707,9 @@ async fn private_buy(args: PrivateBuyArgs) -> Result<()> {
     let from_private = parse_account_id(&args.from_private)?;
     let to_private = parse_account_id(&args.to_private)?;
     let mut wallet = WalletCore::from_env().context("opening the project wallet")?;
-    let config = load_curve_config(&wallet, curve_program.id()).await?;
+    let config = load_curve_config(namespace, &wallet, curve_program.id()).await?;
     let receipt = submit_private_buy(
+        namespace,
         &mut wallet,
         &private_buy_program,
         &curve_program,
@@ -632,14 +735,15 @@ async fn private_buy(args: PrivateBuyArgs) -> Result<()> {
     Ok(())
 }
 
-async fn sell(json: bool, args: SellArgs) -> Result<()> {
+async fn sell(namespace: lee::AccountId, json: bool, args: SellArgs) -> Result<()> {
     let factory_program = load_program(&args.trade.factory_program_path)?;
     let curve_program = load_program(&args.trade.curve_program_path)?;
     let participant = parse_account_id(&args.trade.participant)?;
     let collateral_definition = parse_account_id(&args.trade.collateral_definition)?;
     let wallet = WalletCore::from_env().context("opening the project wallet")?;
-    let config = load_curve_config(&wallet, curve_program.id()).await?;
+    let config = load_curve_config(namespace, &wallet, curve_program.id()).await?;
     let pool = load_factory_pool(
+        namespace,
         &wallet,
         factory_program.id(),
         curve_program.id(),
@@ -659,6 +763,7 @@ async fn sell(json: bool, args: SellArgs) -> Result<()> {
         return Err(classified(ErrorCategory::SlippageFloor));
     }
     let invocation = build_sell_invocation(
+        namespace,
         factory_program.id(),
         curve_program.id(),
         participant,
@@ -701,12 +806,17 @@ fn print_submission(
     Ok(())
 }
 
-async fn close_factory_pool(json: bool, args: FactoryLifecycleArgs) -> Result<()> {
+async fn close_factory_pool(
+    namespace: lee::AccountId,
+    json: bool,
+    args: FactoryLifecycleArgs,
+) -> Result<()> {
     let factory_program = load_program(&args.factory_program_path)?;
     let curve_program = load_program(&args.curve_program_path)?;
     let creator = parse_account_id(&args.creator)?;
     let collateral_definition = parse_account_id(&args.collateral_definition)?;
     let invocation = build_close_factory_pool_invocation(
+        namespace,
         factory_program.id(),
         curve_program.id(),
         creator,
@@ -731,12 +841,17 @@ async fn close_factory_pool(json: bool, args: FactoryLifecycleArgs) -> Result<()
     Ok(())
 }
 
-async fn claim_creator_allocation(json: bool, args: FactoryLifecycleArgs) -> Result<()> {
+async fn claim_creator_allocation(
+    namespace: lee::AccountId,
+    json: bool,
+    args: FactoryLifecycleArgs,
+) -> Result<()> {
     let factory_program = load_program(&args.factory_program_path)?;
     let curve_program = load_program(&args.curve_program_path)?;
     let creator = parse_account_id(&args.creator)?;
     let collateral_definition = parse_account_id(&args.collateral_definition)?;
     let invocation = build_claim_creator_allocation_invocation(
+        namespace,
         factory_program.id(),
         curve_program.id(),
         creator,
@@ -761,12 +876,13 @@ async fn claim_creator_allocation(json: bool, args: FactoryLifecycleArgs) -> Res
     Ok(())
 }
 
-async fn create_sale(json: bool, args: CreateSaleArgs) -> Result<()> {
+async fn create_sale(namespace: lee::AccountId, json: bool, args: CreateSaleArgs) -> Result<()> {
     let factory_program = load_program(&args.factory_program_path)?;
     let curve_program = load_program(&args.curve_program_path)?;
     let creator = parse_account_id(&args.creator)?;
     let collateral_definition = parse_account_id(&args.collateral_definition)?;
     let invocation = build_create_sale_invocation(
+        namespace,
         factory_program.id(),
         curve_program.id(),
         creator,
@@ -805,6 +921,46 @@ async fn create_sale(json: bool, args: CreateSaleArgs) -> Result<()> {
 mod tests {
     use super::*;
     use clap::{CommandFactory, Parser};
+
+    #[test]
+    fn namespace_admin_commands_accept_explicit_identity_and_transfer() {
+        let cli = Cli::try_parse_from([
+            "launchpad",
+            "--namespace",
+            "Public/identity",
+            "configure",
+            "--curve-program-path",
+            "curve.bin",
+            "--admin",
+            "Public/current",
+            "--new-admin",
+            "Public/next",
+            "--protocol-fee-bps",
+            "0",
+            "--treasury",
+            "Public/treasury",
+        ])
+        .unwrap();
+        assert_eq!(cli.namespace.as_deref(), Some("Public/identity"));
+        let Command::Configure(config) = cli.command else {
+            panic!("configure command")
+        };
+        assert_eq!(config.new_admin.as_deref(), Some("Public/next"));
+        for command in ["namespace-info", "renounce-admin"] {
+            let mut args = vec![
+                "launchpad",
+                "--namespace",
+                "Public/identity",
+                command,
+                "--curve-program-path",
+                "curve.bin",
+            ];
+            if command == "renounce-admin" {
+                args.extend(["--admin", "Public/current"]);
+            }
+            assert!(Cli::try_parse_from(args).is_ok());
+        }
+    }
 
     #[test]
     fn launchpad_exposes_creator_and_participant_commands() {

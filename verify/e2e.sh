@@ -27,7 +27,7 @@ if [[ "$ownership" == "foreign" ]]; then
   fail "foreign listener detected; refusing to reset or stop a localnet not managed by this project"
 fi
 
-: "${GENESIS_ADMIN_ACCOUNT:?set GENESIS_ADMIN_ACCOUNT to the configured curve genesis-admin wallet account}"
+: "${NAMESPACE_ADMIN_ACCOUNT:?set NAMESPACE_ADMIN_ACCOUNT to the public namespace-creator wallet account}"
 
 managed_localnet=false
 cleanup() {
@@ -72,7 +72,7 @@ run_launchpad_json() {
   shift
 
   local response
-  response=$(cargo run --quiet -p launchpad-cli -- --json "$@") \
+  response=$(cargo run --quiet -p launchpad-cli -- --json --namespace "$creator" "$@") \
     || fail "$checkpoint command failed"
   assert_json "$checkpoint" "$response"
   printf '%s\n' "$response"
@@ -84,7 +84,7 @@ expect_launchpad_error() {
   shift 2
 
   local response
-  if response=$(cargo run --quiet -p launchpad-cli -- --json "$@" 2>&1); then
+  if response=$(cargo run --quiet -p launchpad-cli -- --json --namespace "$creator" "$@" 2>&1); then
     fail "$checkpoint unexpectedly succeeded"
   fi
   assert_json "$checkpoint" "$response"
@@ -137,7 +137,7 @@ factory_program_path=$(find_guest_binary factory || true)
 [[ -n "$curve_program_path" && -n "$factory_program_path" ]] \
   || fail "lgs build did not produce the curve and factory guest binaries under target/riscv-guest or methods/target/riscv-guest"
 
-creator=${GENESIS_ADMIN_ACCOUNT#*/}
+creator=${NAMESPACE_ADMIN_ACCOUNT#*/}
 treasury=$creator
 buyer_one=$(new_public_account)
 buyer_two=$(new_public_account)

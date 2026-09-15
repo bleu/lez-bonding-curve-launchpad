@@ -4,8 +4,8 @@
 pub mod factory {
     #[instruction]
     pub fn create_factory_pool(
-        #[account(init, pda = [literal("factory"), arg("launch_salt")])] factory: AccountWithMetadata,
-        #[account(init, pda = [literal("definition"), arg("launch_salt")])] token_definition: AccountWithMetadata,
+        #[account(init, pda = [literal("factory"), arg("launch_salt"), arg("namespace")])] factory: AccountWithMetadata,
+        #[account(init, pda = [literal("definition"), arg("launch_salt"), arg("namespace")])] token_definition: AccountWithMetadata,
         #[account(init)] mint: AccountWithMetadata,
         #[account(init)] metadata: AccountWithMetadata,
         #[account(init)] creator_escrow: AccountWithMetadata,
@@ -18,6 +18,8 @@ pub mod factory {
         #[account(init)] pool_token_ata: AccountWithMetadata,
         #[account(init)] pool_collateral_ata: AccountWithMetadata,
         clock: AccountWithMetadata,
+        config: AccountWithMetadata,
+        namespace: AccountId,
         launch_salt: [u8; 32],
         name: String,
         uri: String,

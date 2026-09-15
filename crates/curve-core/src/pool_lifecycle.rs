@@ -30,6 +30,7 @@ pub fn close_pool(
     assert_eq!(
         pool.account_id,
         compute_pool_pda(
+            pool_account.namespace,
             curve_program_id,
             pool_account.token0_definition_id,
             pool_account.token1_definition_id,
@@ -76,6 +77,7 @@ pub fn withdraw_reserves(
     assert_eq!(
         pool.account_id,
         compute_pool_pda(
+            pool_account.namespace,
             curve_program_id,
             pool_account.token0_definition_id,
             pool_account.token1_definition_id,

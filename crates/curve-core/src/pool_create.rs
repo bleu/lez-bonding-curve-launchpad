@@ -18,6 +18,7 @@ use crate::{
     reason = "the public instruction has eight accounts and explicit pool parameters"
 )]
 pub fn create_pool(
+    namespace: AccountId,
     pool_account: AccountWithMetadata,
     owner: AccountWithMetadata,
     token0_definition: AccountWithMetadata,
@@ -54,6 +55,7 @@ pub fn create_pool(
     assert_eq!(
         pool_account.account_id,
         compute_pool_pda(
+            namespace,
             curve_program_id,
             token0_definition.account_id,
             token1_definition.account_id,
@@ -112,6 +114,7 @@ pub fn create_pool(
     .expect("Pool parameters are invalid");
     let mut pool_post = pool_account.account;
     pool_post.data = Data::from(&PoolAccount {
+        namespace,
         token0_definition_id: token0_definition.account_id,
         token1_definition_id: token1_definition.account_id,
         owner: expected_owner,
@@ -172,6 +175,7 @@ pub fn create_pool(
         AccountPostState::new_claimed_if_default(
             pool_post,
             Claim::Pda(compute_pool_pda_seed(
+                namespace,
                 token0_definition.account_id,
                 token1_definition.account_id,
                 expected_owner,

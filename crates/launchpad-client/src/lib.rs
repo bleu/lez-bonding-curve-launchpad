@@ -122,6 +122,7 @@ pub struct PrivateBuyReceipt {
 /// The router guest is supplied separately because its image ID is deployment-specific. Its
 /// dependencies are pinned LEZ token/ATA/native programs plus the supplied curve guest.
 pub async fn submit_private_buy(
+    namespace: AccountId,
     wallet: &mut WalletCore,
     private_buy_program: &Program,
     curve_program: &Program,
@@ -137,6 +138,7 @@ pub async fn submit_private_buy(
         .context("persisting the transient public account key")?;
 
     let (_, token_definition, pool) = factory_pool_addresses(
+        namespace,
         factory_program_id,
         curve_program.id(),
         request.launch_salt,
@@ -174,7 +176,7 @@ pub async fn submit_private_buy(
             token_definition,
         )),
         AccountIdentity::PublicNoSign(pool),
-        AccountIdentity::PublicNoSign(compute_config_pda(curve_program.id())),
+        AccountIdentity::PublicNoSign(compute_config_pda(namespace, curve_program.id())),
         AccountIdentity::PublicNoSign(associated_token_account(
             pool,
             request.collateral_definition,
@@ -226,16 +228,19 @@ pub struct SellRequest {
 /// Builds the curve configuration initialization/update call.
 #[must_use]
 pub fn build_update_config_invocation(
+    namespace: AccountId,
     curve_program_id: ProgramId,
+    authority: AccountId,
     admin: AccountId,
     protocol_fee_bps: u16,
     treasury: AccountId,
 ) -> PublicInvocation<CurveInstruction> {
     PublicInvocation {
         program_id: curve_program_id,
-        account_ids: vec![compute_config_pda(curve_program_id), admin],
-        signer_accounts: vec![admin],
+        account_ids: vec![compute_config_pda(namespace, curve_program_id), authority],
+        signer_accounts: vec![authority],
         instruction: CurveInstruction::UpdateConfig {
+            namespace,
             admin,
             protocol_fee_bps,
             treasury,
@@ -314,6 +319,7 @@ pub struct PublicInvocation<I> {
 /// Builds the complete factory call for a launch. All PDAs and ATAs are derived locally;
 /// only the creator account is caller-provided.
 pub fn build_create_sale_invocation(
+    namespace: AccountId,
     factory_program_id: ProgramId,
     curve_program_id: ProgramId,
     creator: AccountId,
@@ -326,6 +332,7 @@ pub fn build_create_sale_invocation(
     )
     .map_err(|error| anyhow!("invalid factory curve parameters: {error}"))?;
     let (factory, token_definition, pool) = factory_pool_addresses(
+        namespace,
         factory_program_id,
         curve_program_id,
         request.launch_salt,
@@ -334,9 +341,9 @@ pub fn build_create_sale_invocation(
     let account_ids = vec![
         factory,
         token_definition,
-        compute_mint_pda(factory_program_id, request.launch_salt),
-        compute_metadata_pda(factory_program_id, request.launch_salt),
-        compute_escrow_pda(factory_program_id, request.launch_salt),
+        compute_mint_pda(namespace, factory_program_id, request.launch_salt),
+        compute_metadata_pda(namespace, factory_program_id, request.launch_salt),
+        compute_escrow_pda(namespace, factory_program_id, request.launch_salt),
         creator,
         associated_token_account(creator, token_definition),
         request.collateral_definition,
@@ -346,12 +353,14 @@ pub fn build_create_sale_invocation(
         associated_token_account(pool, token_definition),
         associated_token_account(pool, request.collateral_definition),
         clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID,
+        compute_config_pda(namespace, curve_program_id),
     ];
     Ok(PublicInvocation {
         program_id: factory_program_id,
         account_ids,
         signer_accounts: vec![creator],
         instruction: FactoryInstruction::CreateFactoryPool {
+            namespace,
             launch_salt: request.launch_salt,
             name: request.name,
             uri: request.uri,
@@ -370,6 +379,7 @@ pub fn build_create_sale_invocation(
 /// while its state verifies the creator's signed commitment.
 #[must_use]
 pub fn build_close_factory_pool_invocation(
+    namespace: AccountId,
     factory_program_id: ProgramId,
     curve_program_id: ProgramId,
     creator: AccountId,
@@ -377,6 +387,7 @@ pub fn build_close_factory_pool_invocation(
     collateral_definition: AccountId,
 ) -> PublicInvocation<FactoryInstruction> {
     let (factory, _, pool) = factory_pool_addresses(
+        namespace,
         factory_program_id,
         curve_program_id,
         launch_salt,
@@ -399,6 +410,7 @@ pub fn build_close_factory_pool_invocation(
 /// and forwards its remaining reserves under the factory's allocation policy.
 #[must_use]
 pub fn build_withdraw_factory_proceeds_invocation(
+    namespace: AccountId,
     factory_program_id: ProgramId,
     curve_program_id: ProgramId,
     creator: AccountId,
@@ -406,6 +418,7 @@ pub fn build_withdraw_factory_proceeds_invocation(
     collateral_definition: AccountId,
 ) -> PublicInvocation<FactoryInstruction> {
     let (factory, token_definition, pool) = factory_pool_addresses(
+        namespace,
         factory_program_id,
         curve_program_id,
         launch_salt,
@@ -435,6 +448,7 @@ pub fn build_withdraw_factory_proceeds_invocation(
 /// Builds the creator-authorized release of an `OnClose` allocation from factory escrow.
 #[must_use]
 pub fn build_claim_creator_allocation_invocation(
+    namespace: AccountId,
     factory_program_id: ProgramId,
     curve_program_id: ProgramId,
     creator: AccountId,
@@ -442,6 +456,7 @@ pub fn build_claim_creator_allocation_invocation(
     collateral_definition: AccountId,
 ) -> PublicInvocation<FactoryInstruction> {
     let (factory, token_definition, pool) = factory_pool_addresses(
+        namespace,
         factory_program_id,
         curve_program_id,
         launch_salt,
@@ -452,7 +467,7 @@ pub fn build_claim_creator_allocation_invocation(
         account_ids: vec![
             factory,
             pool,
-            compute_escrow_pda(factory_program_id, launch_salt),
+            compute_escrow_pda(namespace, factory_program_id, launch_salt),
             creator,
             token_definition,
             associated_token_account(creator, token_definition),
@@ -466,6 +481,7 @@ pub fn build_claim_creator_allocation_invocation(
 /// Builds a factory-launch purchase as a neutral curve exact-output swap.
 #[must_use]
 pub fn build_buy_invocation(
+    namespace: AccountId,
     factory_program_id: ProgramId,
     curve_program_id: ProgramId,
     participant: AccountId,
@@ -473,6 +489,7 @@ pub fn build_buy_invocation(
     request: BuyRequest,
 ) -> PublicInvocation<CurveInstruction> {
     let (_, token_definition, pool) = factory_pool_addresses(
+        namespace,
         factory_program_id,
         curve_program_id,
         request.launch_salt,
@@ -482,7 +499,7 @@ pub fn build_buy_invocation(
         program_id: curve_program_id,
         account_ids: vec![
             pool,
-            compute_config_pda(curve_program_id),
+            compute_config_pda(namespace, curve_program_id),
             participant,
             associated_token_account(participant, request.collateral_definition),
             associated_token_account(pool, request.collateral_definition),
@@ -506,6 +523,7 @@ pub fn build_buy_invocation(
 /// protects the resulting launch-token amount with a floor.
 #[must_use]
 pub fn build_buy_with_collateral_invocation(
+    namespace: AccountId,
     factory_program_id: ProgramId,
     curve_program_id: ProgramId,
     participant: AccountId,
@@ -513,6 +531,7 @@ pub fn build_buy_with_collateral_invocation(
     request: BuyWithCollateralRequest,
 ) -> PublicInvocation<CurveInstruction> {
     let (_, token_definition, pool) = factory_pool_addresses(
+        namespace,
         factory_program_id,
         curve_program_id,
         request.launch_salt,
@@ -522,7 +541,7 @@ pub fn build_buy_with_collateral_invocation(
         program_id: curve_program_id,
         account_ids: vec![
             pool,
-            compute_config_pda(curve_program_id),
+            compute_config_pda(namespace, curve_program_id),
             participant,
             associated_token_account(participant, request.collateral_definition),
             associated_token_account(pool, request.collateral_definition),
@@ -543,6 +562,7 @@ pub fn build_buy_with_collateral_invocation(
 /// Builds a factory-launch sale as a neutral curve exact-input swap.
 #[must_use]
 pub fn build_sell_invocation(
+    namespace: AccountId,
     factory_program_id: ProgramId,
     curve_program_id: ProgramId,
     participant: AccountId,
@@ -550,6 +570,7 @@ pub fn build_sell_invocation(
     request: SellRequest,
 ) -> PublicInvocation<CurveInstruction> {
     let (_, token_definition, pool) = factory_pool_addresses(
+        namespace,
         factory_program_id,
         curve_program_id,
         request.launch_salt,
@@ -559,7 +580,7 @@ pub fn build_sell_invocation(
         program_id: curve_program_id,
         account_ids: vec![
             pool,
-            compute_config_pda(curve_program_id),
+            compute_config_pda(namespace, curve_program_id),
             participant,
             associated_token_account(participant, token_definition),
             associated_token_account(pool, token_definition),
@@ -578,8 +599,12 @@ pub fn build_sell_invocation(
 }
 
 /// Reads the live curve configuration so callers direct protocol fees to its configured treasury.
-pub async fn load_curve_config(wallet: &WalletCore, curve_program_id: ProgramId) -> Result<Config> {
-    let config_id = compute_config_pda(curve_program_id);
+pub async fn load_curve_config(
+    namespace: AccountId,
+    wallet: &WalletCore,
+    curve_program_id: ProgramId,
+) -> Result<Config> {
+    let config_id = compute_config_pda(namespace, curve_program_id);
     let account = wallet
         .get_account_public(config_id)
         .await
@@ -589,11 +614,12 @@ pub async fn load_curve_config(wallet: &WalletCore, curve_program_id: ProgramId)
 
 /// Reads the immutable launch policy and current factory lifecycle flags for a launch salt.
 pub async fn load_factory_state(
+    namespace: AccountId,
     wallet: &WalletCore,
     factory_program_id: ProgramId,
     launch_salt: [u8; 32],
 ) -> Result<FactoryState> {
-    let factory_id = compute_factory_pda(factory_program_id, launch_salt);
+    let factory_id = compute_factory_pda(namespace, factory_program_id, launch_salt);
     let account = wallet
         .get_account_public(factory_id)
         .await
@@ -603,6 +629,7 @@ pub async fn load_factory_state(
 
 /// Reads the current neutral curve reserves for a factory launch.
 pub async fn load_factory_pool(
+    namespace: AccountId,
     wallet: &WalletCore,
     factory_program_id: ProgramId,
     curve_program_id: ProgramId,
@@ -610,6 +637,7 @@ pub async fn load_factory_pool(
     collateral_definition: AccountId,
 ) -> Result<curve_core::PoolAccount> {
     let (_, _, pool_id) = factory_pool_addresses(
+        namespace,
         factory_program_id,
         curve_program_id,
         launch_salt,
@@ -667,14 +695,16 @@ pub async fn submit_public_invocation<I: Serialize>(
 }
 
 fn factory_pool_addresses(
+    namespace: AccountId,
     factory_program_id: ProgramId,
     curve_program_id: ProgramId,
     launch_salt: [u8; 32],
     collateral_definition: AccountId,
 ) -> (AccountId, AccountId, AccountId) {
-    let factory = compute_factory_pda(factory_program_id, launch_salt);
-    let token_definition = compute_definition_pda(factory_program_id, launch_salt);
+    let factory = compute_factory_pda(namespace, factory_program_id, launch_salt);
+    let token_definition = compute_definition_pda(namespace, factory_program_id, launch_salt);
     let pool = compute_pool_pda(
+        namespace,
         curve_program_id,
         token_definition,
         collateral_definition,
@@ -690,6 +720,19 @@ fn associated_token_account(owner: AccountId, token_definition: AccountId) -> Ac
     )
 }
 
+/// Permanently renounces namespace administration without changing the trading settings.
+pub fn build_renounce_admin_invocation(
+    namespace: AccountId,
+    curve_program_id: ProgramId,
+    admin: AccountId,
+) -> PublicInvocation<CurveInstruction> {
+    PublicInvocation {
+        program_id: curve_program_id,
+        account_ids: vec![compute_config_pda(namespace, curve_program_id), admin],
+        signer_accounts: vec![admin],
+        instruction: CurveInstruction::RenounceAdmin { namespace },
+    }
+}
 #[cfg(test)]
 mod tests {
     use factory_core::{
@@ -711,11 +754,47 @@ mod tests {
     const CURVE_PROGRAM_ID: [u32; 8] = [6; 8];
 
     #[test]
+    fn namespace_selection_changes_factory_pool_and_swap_config_together() {
+        let a = AccountId::new([51; 32]);
+        let b = AccountId::new([52; 32]);
+        let request = BuyRequest {
+            launch_salt: [1; 32],
+            collateral_definition: AccountId::new([2; 32]),
+            amount_out: 10,
+            max_amount_in: 100,
+        };
+        let build = |namespace| {
+            build_buy_invocation(
+                namespace,
+                FACTORY_PROGRAM_ID,
+                CURVE_PROGRAM_ID,
+                AccountId::new([3; 32]),
+                AccountId::new([4; 32]),
+                request,
+            )
+        };
+        let first = build(a);
+        let second = build(b);
+        assert_ne!(first.account_ids[0], second.account_ids[0]);
+        assert_eq!(
+            first.account_ids[1],
+            curve_core::compute_config_pda(a, CURVE_PROGRAM_ID)
+        );
+        assert_eq!(
+            second.account_ids[1],
+            curve_core::compute_config_pda(b, CURVE_PROGRAM_ID)
+        );
+        assert_ne!(first.account_ids[4], second.account_ids[4]);
+        assert_ne!(first.account_ids[5], second.account_ids[5]);
+    }
+
+    #[test]
     fn factory_launch_builds_the_derived_accounts_and_creator_authorization() {
         let launch_salt = [1; 32];
         let creator = AccountId::new([9; 32]);
         let collateral_definition = AccountId::new([5; 32]);
         let invocation = build_create_sale_invocation(
+            AccountId::new([0xAD; 32]),
             FACTORY_PROGRAM_ID,
             CURVE_PROGRAM_ID,
             creator,
@@ -734,8 +813,10 @@ mod tests {
         )
         .expect("valid factory launch invocation");
 
-        let factory = compute_factory_pda(FACTORY_PROGRAM_ID, launch_salt);
-        let definition = compute_definition_pda(FACTORY_PROGRAM_ID, launch_salt);
+        let factory =
+            compute_factory_pda(AccountId::new([0xAD; 32]), FACTORY_PROGRAM_ID, launch_salt);
+        let definition =
+            compute_definition_pda(AccountId::new([0xAD; 32]), FACTORY_PROGRAM_ID, launch_salt);
         assert_eq!(invocation.program_id, FACTORY_PROGRAM_ID);
         assert_eq!(invocation.signer_accounts, vec![creator]);
         assert_eq!(
@@ -743,19 +824,20 @@ mod tests {
             [
                 factory,
                 definition,
-                compute_mint_pda(FACTORY_PROGRAM_ID, launch_salt),
-                compute_metadata_pda(FACTORY_PROGRAM_ID, launch_salt),
-                compute_escrow_pda(FACTORY_PROGRAM_ID, launch_salt),
+                compute_mint_pda(AccountId::new([0xAD; 32]), FACTORY_PROGRAM_ID, launch_salt),
+                compute_metadata_pda(AccountId::new([0xAD; 32]), FACTORY_PROGRAM_ID, launch_salt),
+                compute_escrow_pda(AccountId::new([0xAD; 32]), FACTORY_PROGRAM_ID, launch_salt),
                 creator,
             ]
         );
-        assert_eq!(invocation.account_ids.len(), 14);
+        assert_eq!(invocation.account_ids.len(), 15);
         assert_eq!(invocation.account_ids[7], collateral_definition);
     }
 
     #[test]
     fn factory_launch_rejects_a_virtual_token_reserve_at_the_sale_target() {
         let error = build_create_sale_invocation(
+            AccountId::new([0xAD; 32]),
             FACTORY_PROGRAM_ID,
             CURVE_PROGRAM_ID,
             AccountId::new([9; 32]),
@@ -781,12 +863,22 @@ mod tests {
     fn config_initialization_uses_the_curve_config_pda_and_admin_signature() {
         let admin = AccountId::new([9; 32]);
         let treasury = AccountId::new([4; 32]);
-        let invocation = build_update_config_invocation(CURVE_PROGRAM_ID, admin, 75, treasury);
+        let invocation = build_update_config_invocation(
+            AccountId::new([0xAD; 32]),
+            CURVE_PROGRAM_ID,
+            admin,
+            admin,
+            75,
+            treasury,
+        );
 
         assert_eq!(invocation.program_id, CURVE_PROGRAM_ID);
         assert_eq!(
             invocation.account_ids,
-            vec![curve_core::compute_config_pda(CURVE_PROGRAM_ID), admin,]
+            vec![
+                curve_core::compute_config_pda(AccountId::new([0xAD; 32]), CURVE_PROGRAM_ID),
+                admin,
+            ]
         );
         assert_eq!(invocation.signer_accounts, vec![admin]);
         assert!(matches!(
@@ -795,6 +887,7 @@ mod tests {
                 admin: actual_admin,
                 protocol_fee_bps: 75,
                 treasury: actual_treasury,
+                ..
             } if actual_admin == admin && actual_treasury == treasury
         ));
     }
@@ -805,6 +898,7 @@ mod tests {
         let creator = AccountId::new([9; 32]);
         let collateral_definition = AccountId::new([5; 32]);
         let invocation = build_close_factory_pool_invocation(
+            AccountId::new([0xAD; 32]),
             FACTORY_PROGRAM_ID,
             CURVE_PROGRAM_ID,
             creator,
@@ -812,8 +906,10 @@ mod tests {
             collateral_definition,
         );
 
-        let factory = compute_factory_pda(FACTORY_PROGRAM_ID, launch_salt);
-        let definition = compute_definition_pda(FACTORY_PROGRAM_ID, launch_salt);
+        let factory =
+            compute_factory_pda(AccountId::new([0xAD; 32]), FACTORY_PROGRAM_ID, launch_salt);
+        let definition =
+            compute_definition_pda(AccountId::new([0xAD; 32]), FACTORY_PROGRAM_ID, launch_salt);
         assert_eq!(invocation.program_id, FACTORY_PROGRAM_ID);
         assert_eq!(invocation.signer_accounts, vec![creator]);
         assert_eq!(
@@ -821,6 +917,7 @@ mod tests {
             vec![
                 factory,
                 curve_core::compute_pool_pda(
+                    AccountId::new([0xAD; 32]),
                     CURVE_PROGRAM_ID,
                     definition,
                     collateral_definition,
@@ -842,6 +939,7 @@ mod tests {
         let creator = AccountId::new([9; 32]);
         let collateral_definition = AccountId::new([5; 32]);
         let invocation = build_claim_creator_allocation_invocation(
+            AccountId::new([0xAD; 32]),
             FACTORY_PROGRAM_ID,
             CURVE_PROGRAM_ID,
             creator,
@@ -849,14 +947,16 @@ mod tests {
             collateral_definition,
         );
 
-        let factory = compute_factory_pda(FACTORY_PROGRAM_ID, launch_salt);
-        let definition = compute_definition_pda(FACTORY_PROGRAM_ID, launch_salt);
+        let factory =
+            compute_factory_pda(AccountId::new([0xAD; 32]), FACTORY_PROGRAM_ID, launch_salt);
+        let definition =
+            compute_definition_pda(AccountId::new([0xAD; 32]), FACTORY_PROGRAM_ID, launch_salt);
         assert_eq!(invocation.program_id, FACTORY_PROGRAM_ID);
         assert_eq!(invocation.signer_accounts, vec![creator]);
         assert_eq!(invocation.account_ids[0], factory);
         assert_eq!(
             invocation.account_ids[2],
-            compute_escrow_pda(FACTORY_PROGRAM_ID, launch_salt)
+            compute_escrow_pda(AccountId::new([0xAD; 32]), FACTORY_PROGRAM_ID, launch_salt)
         );
         assert_eq!(invocation.account_ids[4], definition);
         assert_eq!(
@@ -876,6 +976,7 @@ mod tests {
         let collateral_definition = AccountId::new([5; 32]);
         let treasury = AccountId::new([4; 32]);
         let invocation = build_buy_invocation(
+            AccountId::new([0xAD; 32]),
             FACTORY_PROGRAM_ID,
             CURVE_PROGRAM_ID,
             participant,
@@ -888,9 +989,12 @@ mod tests {
             },
         );
 
-        let factory = compute_factory_pda(FACTORY_PROGRAM_ID, launch_salt);
-        let definition = compute_definition_pda(FACTORY_PROGRAM_ID, launch_salt);
+        let factory =
+            compute_factory_pda(AccountId::new([0xAD; 32]), FACTORY_PROGRAM_ID, launch_salt);
+        let definition =
+            compute_definition_pda(AccountId::new([0xAD; 32]), FACTORY_PROGRAM_ID, launch_salt);
         let pool = curve_core::compute_pool_pda(
+            AccountId::new([0xAD; 32]),
             CURVE_PROGRAM_ID,
             definition,
             collateral_definition,
@@ -933,6 +1037,7 @@ mod tests {
         let collateral_definition = AccountId::new([5; 32]);
         let treasury = AccountId::new([4; 32]);
         let invocation = build_buy_with_collateral_invocation(
+            AccountId::new([0xAD; 32]),
             FACTORY_PROGRAM_ID,
             CURVE_PROGRAM_ID,
             participant,
@@ -945,7 +1050,8 @@ mod tests {
             },
         );
 
-        let definition = compute_definition_pda(FACTORY_PROGRAM_ID, launch_salt);
+        let definition =
+            compute_definition_pda(AccountId::new([0xAD; 32]), FACTORY_PROGRAM_ID, launch_salt);
         assert_eq!(invocation.program_id, CURVE_PROGRAM_ID);
         assert_eq!(invocation.signer_accounts, vec![participant]);
         assert_eq!(
@@ -977,6 +1083,7 @@ mod tests {
         let collateral_definition = AccountId::new([5; 32]);
         let treasury = AccountId::new([4; 32]);
         let invocation = build_sell_invocation(
+            AccountId::new([0xAD; 32]),
             FACTORY_PROGRAM_ID,
             CURVE_PROGRAM_ID,
             participant,
@@ -989,7 +1096,8 @@ mod tests {
             },
         );
 
-        let definition = compute_definition_pda(FACTORY_PROGRAM_ID, launch_salt);
+        let definition =
+            compute_definition_pda(AccountId::new([0xAD; 32]), FACTORY_PROGRAM_ID, launch_salt);
         assert_eq!(invocation.program_id, CURVE_PROGRAM_ID);
         assert_eq!(invocation.signer_accounts, vec![participant]);
         assert_eq!(
@@ -1019,6 +1127,7 @@ mod tests {
         let token_definition = AccountId::new([2; 32]);
         let collateral_definition = AccountId::new([5; 32]);
         let pool = curve_core::PoolAccount {
+            namespace: AccountId::new([0xAD; 32]),
             token0_definition_id: token_definition,
             token1_definition_id: collateral_definition,
             owner: AccountId::new([1; 32]),
@@ -1049,14 +1158,17 @@ mod tests {
         let creator = AccountId::new([9; 32]);
         let collateral_definition = AccountId::new([5; 32]);
         let invocation = build_withdraw_factory_proceeds_invocation(
+            AccountId::new([0xAD; 32]),
             FACTORY_PROGRAM_ID,
             CURVE_PROGRAM_ID,
             creator,
             launch_salt,
             collateral_definition,
         );
-        let factory = compute_factory_pda(FACTORY_PROGRAM_ID, launch_salt);
-        let definition = compute_definition_pda(FACTORY_PROGRAM_ID, launch_salt);
+        let factory =
+            compute_factory_pda(AccountId::new([0xAD; 32]), FACTORY_PROGRAM_ID, launch_salt);
+        let definition =
+            compute_definition_pda(AccountId::new([0xAD; 32]), FACTORY_PROGRAM_ID, launch_salt);
         assert_eq!(invocation.program_id, FACTORY_PROGRAM_ID);
         assert_eq!(invocation.signer_accounts, vec![creator]);
         assert_eq!(invocation.account_ids.len(), 12);

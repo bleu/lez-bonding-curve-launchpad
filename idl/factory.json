@@ -19,6 +19,10 @@
               {
                 "kind": "arg",
                 "path": "launch_salt"
+              },
+              {
+                "kind": "arg",
+                "path": "namespace"
               }
             ]
           }
@@ -37,6 +41,10 @@
               {
                 "kind": "arg",
                 "path": "launch_salt"
+              },
+              {
+                "kind": "arg",
+                "path": "namespace"
               }
             ]
           }
@@ -112,9 +120,19 @@
           "writable": false,
           "signer": false,
           "init": false
+        },
+        {
+          "name": "config",
+          "writable": false,
+          "signer": false,
+          "init": false
         }
       ],
       "args": [
+        {
+          "name": "namespace",
+          "type": "account_id"
+        },
         {
           "name": "launch_salt",
           "type": {

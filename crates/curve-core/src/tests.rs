@@ -14,14 +14,15 @@ use token_core::{TokenDefinition, TokenHolding};
 
 use crate::dispatch::process_instruction;
 use crate::{
-    ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID, Config, GENESIS_ADMIN, Instruction, PoolAccount,
-    compute_config_pda, compute_config_pda_seed, compute_pool_pda,
+    ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID, Config, Instruction, PoolAccount, compute_config_pda,
+    compute_config_pda_seed, compute_pool_pda,
     pool_create::create_pool,
     pool_lifecycle::{close_pool, withdraw_reserves},
     pool_swap::{swap_exact_input, swap_exact_output},
     update_config::update_config,
 };
 
+const NAMESPACE_CREATOR: AccountId = AccountId::new([0xAD; 32]);
 const CURVE_PROGRAM_ID: ProgramId = [7; 8];
 const ATA_PROGRAM_ID: ProgramId = ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID;
 const TOKEN_PROGRAM_ID: ProgramId = [9; 8];
@@ -30,7 +31,7 @@ fn uninitialized_config() -> AccountWithMetadata {
     AccountWithMetadata {
         account: Account::default(),
         is_authorized: false,
-        account_id: compute_config_pda(CURVE_PROGRAM_ID),
+        account_id: compute_config_pda(AccountId::new([0xAD; 32]), CURVE_PROGRAM_ID),
     }
 }
 
@@ -42,8 +43,8 @@ fn signer(account_id: AccountId) -> AccountWithMetadata {
     }
 }
 
-fn genesis_admin_signer() -> AccountWithMetadata {
-    signer(GENESIS_ADMIN)
+fn namespace_creator_signer() -> AccountWithMetadata {
+    signer(NAMESPACE_CREATOR)
 }
 
 fn initialized_config(admin: AccountId) -> AccountWithMetadata {
@@ -59,7 +60,7 @@ fn initialized_config(admin: AccountId) -> AccountWithMetadata {
     AccountWithMetadata {
         account,
         is_authorized: false,
-        account_id: compute_config_pda(CURVE_PROGRAM_ID),
+        account_id: compute_config_pda(AccountId::new([0xAD; 32]), CURVE_PROGRAM_ID),
     }
 }
 
@@ -168,6 +169,7 @@ fn valid_create_pool_accounts() -> CreatePoolAccounts {
     let token0_definition_id = AccountId::new([4; 32]);
     let token1_definition_id = AccountId::new([5; 32]);
     let pool_id = compute_pool_pda(
+        AccountId::new([0xAD; 32]),
         CURVE_PROGRAM_ID,
         token0_definition_id,
         token1_definition_id,
@@ -197,6 +199,7 @@ fn create_pool_with_accounts(
 ) {
     let owner_id = accounts.owner.account_id;
     let _result = create_pool(
+        AccountId::new([0xAD; 32]),
         accounts.pool,
         accounts.owner,
         accounts.token0_definition,
@@ -283,6 +286,7 @@ fn create_pool_rejects_an_end_timestamp_at_the_trusted_time_boundary() {
     let accounts = valid_create_pool_accounts();
     let owner_id = accounts.owner.account_id;
     let _ = create_pool(
+        AccountId::new([0xAD; 32]),
         accounts.pool,
         accounts.owner,
         accounts.token0_definition,
@@ -311,6 +315,7 @@ fn create_pool_rejects_a_substituted_clock_even_without_an_end_timestamp() {
     let mut fake_clock = trusted_clock(1);
     fake_clock.account_id = AccountId::new([99; 32]);
     let _ = create_pool(
+        AccountId::new([0xAD; 32]),
         accounts.pool,
         accounts.owner,
         accounts.token0_definition,
@@ -340,6 +345,7 @@ fn owner_can_open_a_pool_and_atomically_fund_both_ata_reserves() {
     let pool_token0_ata = accounts.pool_token0_ata.clone();
     let pool_token1_ata = accounts.pool_token1_ata.clone();
     let (post_states, chained_calls) = create_pool(
+        AccountId::new([0xAD; 32]),
         accounts.pool,
         accounts.owner,
         accounts.token0_definition,
@@ -373,7 +379,10 @@ fn owner_can_open_a_pool_and_atomically_fund_both_ata_reserves() {
     assert_eq!(
         post_states[0].required_claim(),
         Some(Claim::Pda(crate::compute_pool_pda_seed(
-            token0_id, token1_id, owner_id,
+            AccountId::new([0xAD; 32]),
+            token0_id,
+            token1_id,
+            owner_id,
         )))
     );
 
@@ -421,6 +430,7 @@ fn zero_initial_reserve_creates_its_ata_without_emitting_a_zero_transfer() {
     let accounts = valid_create_pool_accounts();
     let owner_id = accounts.owner.account_id;
     let (_, chained_calls) = create_pool(
+        AccountId::new([0xAD; 32]),
         accounts.pool,
         accounts.owner,
         accounts.token0_definition,
@@ -459,8 +469,9 @@ fn zero_initial_reserve_creates_its_ata_without_emitting_a_zero_transfer() {
 
 #[should_panic(expected = "Authority is not the config admin")]
 #[test]
-fn init_rejects_an_authority_other_than_the_genesis_admin() {
+fn init_rejects_an_authority_other_than_the_namespace_creator() {
     let _post_states = update_config(
+        AccountId::new([0xAD; 32]),
         uninitialized_config(),
         intruder_signer(),
         new_admin(),
@@ -473,13 +484,14 @@ fn init_rejects_an_authority_other_than_the_genesis_admin() {
 #[should_panic(expected = "Authority authorization is missing")]
 #[test]
 fn update_config_rejects_an_unauthorized_authority() {
-    let unsigned_genesis_admin = AccountWithMetadata {
+    let unsigned_namespace_creator = AccountWithMetadata {
         is_authorized: false,
-        ..genesis_admin_signer()
+        ..namespace_creator_signer()
     };
     let _post_states = update_config(
+        AccountId::new([0xAD; 32]),
         uninitialized_config(),
-        unsigned_genesis_admin,
+        unsigned_namespace_creator,
         new_admin(),
         100,
         new_treasury(),
@@ -493,6 +505,7 @@ fn update_config_rejects_an_unauthorized_authority() {
 fn stored_admin_rotates_the_admin_to_a_new_key() {
     let rotated_to = AccountId::new([3; 32]);
     let post_states = update_config(
+        AccountId::new([0xAD; 32]),
         initialized_config(new_admin()),
         signer(new_admin()),
         rotated_to,
@@ -519,8 +532,9 @@ fn update_rejects_the_rotated_out_admin() {
     // The config's stored admin is `new_admin`; the genesis admin was rotated out at
     // init and holds no power anymore.
     let _post_states = update_config(
+        AccountId::new([0xAD; 32]),
         initialized_config(new_admin()),
-        genesis_admin_signer(),
+        namespace_creator_signer(),
         new_admin(),
         100,
         new_treasury(),
@@ -532,8 +546,9 @@ fn update_rejects_the_rotated_out_admin() {
 #[test]
 fn update_config_rejects_protocol_fee_above_the_denominator() {
     let _post_states = update_config(
+        AccountId::new([0xAD; 32]),
         uninitialized_config(),
-        genesis_admin_signer(),
+        namespace_creator_signer(),
         new_admin(),
         10_001,
         new_treasury(),
@@ -547,8 +562,9 @@ fn update_config_rejects_protocol_fee_above_the_denominator() {
 fn protocol_fee_boundaries_are_legal() {
     for protocol_fee_bps in [0, 10_000] {
         let post_states = update_config(
+            AccountId::new([0xAD; 32]),
             uninitialized_config(),
-            genesis_admin_signer(),
+            namespace_creator_signer(),
             new_admin(),
             protocol_fee_bps,
             new_treasury(),
@@ -567,8 +583,9 @@ fn protocol_fee_boundaries_are_legal() {
 #[test]
 fn update_config_rejects_a_default_admin() {
     let _post_states = update_config(
+        AccountId::new([0xAD; 32]),
         uninitialized_config(),
-        genesis_admin_signer(),
+        namespace_creator_signer(),
         AccountId::default(),
         100,
         new_treasury(),
@@ -580,8 +597,9 @@ fn update_config_rejects_a_default_admin() {
 #[test]
 fn update_config_rejects_a_default_treasury() {
     let _post_states = update_config(
+        AccountId::new([0xAD; 32]),
         uninitialized_config(),
-        genesis_admin_signer(),
+        namespace_creator_signer(),
         new_admin(),
         100,
         AccountId::default(),
@@ -597,8 +615,9 @@ fn update_config_rejects_a_forged_config_account() {
         ..uninitialized_config()
     };
     let _post_states = update_config(
+        AccountId::new([0xAD; 32]),
         forged_config,
-        genesis_admin_signer(),
+        namespace_creator_signer(),
         new_admin(),
         100,
         new_treasury(),
@@ -609,8 +628,9 @@ fn update_config_rejects_a_forged_config_account() {
 #[test]
 fn first_update_config_initializes_the_config() {
     let post_states = update_config(
+        AccountId::new([0xAD; 32]),
         uninitialized_config(),
-        genesis_admin_signer(),
+        namespace_creator_signer(),
         new_admin(),
         100,
         new_treasury(),
@@ -625,7 +645,9 @@ fn first_update_config_initializes_the_config() {
     assert_eq!(config.treasury, new_treasury());
     assert_eq!(
         config_post.required_claim(),
-        Some(Claim::Pda(compute_config_pda_seed())),
+        Some(Claim::Pda(compute_config_pda_seed(AccountId::new(
+            [0xAD; 32]
+        )))),
         "creation must claim the config PDA"
     );
 }
@@ -633,6 +655,7 @@ fn first_update_config_initializes_the_config() {
 #[test]
 fn pool_state_round_trips_with_ordered_tokens_owner_and_optional_expiry() {
     let pool_account = PoolAccount {
+        namespace: AccountId::new([0xAD; 32]),
         token0_definition_id: AccountId::new([1; 32]),
         token1_definition_id: AccountId::new([2; 32]),
         owner: AccountId::new([3; 32]),
@@ -651,6 +674,7 @@ fn stored_pool_owner_can_close_the_pool() {
     let token0 = AccountId::new([1; 32]);
     let token1 = AccountId::new([2; 32]);
     let pool_account = PoolAccount {
+        namespace: AccountId::new([0xAD; 32]),
         token0_definition_id: token0,
         token1_definition_id: token1,
         owner,
@@ -663,7 +687,13 @@ fn stored_pool_owner_can_close_the_pool() {
             ..Account::default()
         },
         is_authorized: false,
-        account_id: compute_pool_pda(CURVE_PROGRAM_ID, token0, token1, owner),
+        account_id: compute_pool_pda(
+            AccountId::new([0xAD; 32]),
+            CURVE_PROGRAM_ID,
+            token0,
+            token1,
+            owner,
+        ),
     };
 
     let [post]: [_; 1] = close_pool(pool, signer(owner), trusted_clock(1), CURVE_PROGRAM_ID)
@@ -680,6 +710,7 @@ fn an_unrelated_signer_cannot_close_the_pool() {
     let token0 = AccountId::new([1; 32]);
     let token1 = AccountId::new([2; 32]);
     let pool_account = PoolAccount {
+        namespace: AccountId::new([0xAD; 32]),
         token0_definition_id: token0,
         token1_definition_id: token1,
         owner,
@@ -692,7 +723,13 @@ fn an_unrelated_signer_cannot_close_the_pool() {
             ..Account::default()
         },
         is_authorized: false,
-        account_id: compute_pool_pda(CURVE_PROGRAM_ID, token0, token1, owner),
+        account_id: compute_pool_pda(
+            AccountId::new([0xAD; 32]),
+            CURVE_PROGRAM_ID,
+            token0,
+            token1,
+            owner,
+        ),
     };
     let _ = close_pool(pool, intruder_signer(), trusted_clock(1), CURVE_PROGRAM_ID);
 }
@@ -703,6 +740,7 @@ fn expired_pool_owner_can_withdraw_both_reserves_without_closing_first() {
     let token0 = AccountId::new([1; 32]);
     let token1 = AccountId::new([2; 32]);
     let pool_account = PoolAccount {
+        namespace: AccountId::new([0xAD; 32]),
         token0_definition_id: token0,
         token1_definition_id: token1,
         owner,
@@ -715,7 +753,13 @@ fn expired_pool_owner_can_withdraw_both_reserves_without_closing_first() {
             ..Account::default()
         },
         is_authorized: false,
-        account_id: compute_pool_pda(CURVE_PROGRAM_ID, token0, token1, owner),
+        account_id: compute_pool_pda(
+            AccountId::new([0xAD; 32]),
+            CURVE_PROGRAM_ID,
+            token0,
+            token1,
+            owner,
+        ),
     };
     let clock = AccountWithMetadata {
         account: Account {
@@ -748,11 +792,18 @@ fn withdraw_dispatch_transfers_both_real_reserves_and_retires_the_pool() {
     let owner = AccountId::new([3; 32]);
     let token0 = AccountId::new([1; 32]);
     let token1 = AccountId::new([2; 32]);
-    let pool_id = compute_pool_pda(CURVE_PROGRAM_ID, token0, token1, owner);
+    let pool_id = compute_pool_pda(
+        AccountId::new([0xAD; 32]),
+        CURVE_PROGRAM_ID,
+        token0,
+        token1,
+        owner,
+    );
     let pool = AccountWithMetadata {
         account: Account {
             program_owner: CURVE_PROGRAM_ID,
             data: Data::from(&PoolAccount {
+                namespace: AccountId::new([0xAD; 32]),
                 token0_definition_id: token0,
                 token1_definition_id: token1,
                 owner,
@@ -833,6 +884,7 @@ fn exact_input_sell_charges_the_protocol_fee_in_collateral() {
     let token0 = AccountId::new([1; 32]);
     let token1 = AccountId::new([2; 32]);
     let pool_account = PoolAccount {
+        namespace: AccountId::new([0xAD; 32]),
         token0_definition_id: token0,
         token1_definition_id: token1,
         owner,
@@ -845,7 +897,13 @@ fn exact_input_sell_charges_the_protocol_fee_in_collateral() {
             ..Account::default()
         },
         is_authorized: false,
-        account_id: compute_pool_pda(CURVE_PROGRAM_ID, token0, token1, owner),
+        account_id: compute_pool_pda(
+            AccountId::new([0xAD; 32]),
+            CURVE_PROGRAM_ID,
+            token0,
+            token1,
+            owner,
+        ),
     };
 
     let (posts, settlement) = swap_exact_input(
@@ -878,11 +936,18 @@ fn token0_to_token1_exact_input_settles_all_three_transfers() {
     let participant = AccountId::new([4; 32]);
     let token0 = AccountId::new([1; 32]);
     let token1 = AccountId::new([2; 32]);
-    let pool_id = compute_pool_pda(CURVE_PROGRAM_ID, token0, token1, owner);
+    let pool_id = compute_pool_pda(
+        AccountId::new([0xAD; 32]),
+        CURVE_PROGRAM_ID,
+        token0,
+        token1,
+        owner,
+    );
     let pool = AccountWithMetadata {
         account: Account {
             program_owner: CURVE_PROGRAM_ID,
             data: Data::from(&PoolAccount {
+                namespace: AccountId::new([0xAD; 32]),
                 token0_definition_id: token0,
                 token1_definition_id: token1,
                 owner,
@@ -937,7 +1002,12 @@ fn token0_to_token1_exact_input_settles_all_three_transfers() {
     );
     assert_eq!(
         calls[2].pda_seeds,
-        vec![crate::compute_pool_pda_seed(token0, token1, owner)],
+        vec![crate::compute_pool_pda_seed(
+            AccountId::new([0xAD; 32]),
+            token0,
+            token1,
+            owner
+        )],
         "the pool must prove its PDA authority for the output transfer"
     );
     let transfers: Vec<(AccountId, AccountId, AccountId, u128)> = calls
@@ -987,6 +1057,7 @@ fn exact_output_handler_caps_fee_inclusive_input_in_the_reverse_direction() {
     let token0 = AccountId::new([1; 32]);
     let token1 = AccountId::new([2; 32]);
     let pool_account = PoolAccount {
+        namespace: AccountId::new([0xAD; 32]),
         token0_definition_id: token0,
         token1_definition_id: token1,
         owner,
@@ -999,7 +1070,13 @@ fn exact_output_handler_caps_fee_inclusive_input_in_the_reverse_direction() {
             ..Account::default()
         },
         is_authorized: false,
-        account_id: compute_pool_pda(CURVE_PROGRAM_ID, token0, token1, owner),
+        account_id: compute_pool_pda(
+            AccountId::new([0xAD; 32]),
+            CURVE_PROGRAM_ID,
+            token0,
+            token1,
+            owner,
+        ),
     };
     let config = AccountWithMetadata {
         account: Account {
@@ -1012,7 +1089,7 @@ fn exact_output_handler_caps_fee_inclusive_input_in_the_reverse_direction() {
             ..Account::default()
         },
         is_authorized: false,
-        account_id: compute_config_pda(CURVE_PROGRAM_ID),
+        account_id: compute_config_pda(AccountId::new([0xAD; 32]), CURVE_PROGRAM_ID),
     };
 
     let (_, settlement) = swap_exact_output(pool, config, None, 200, 28, token1, CURVE_PROGRAM_ID);
@@ -1035,11 +1112,18 @@ fn exact_output_dispatch_settles_fee_inclusive_input_and_requested_output_atomic
     let participant = AccountId::new([4; 32]);
     let token0 = AccountId::new([1; 32]);
     let token1 = AccountId::new([2; 32]);
-    let pool_id = compute_pool_pda(CURVE_PROGRAM_ID, token0, token1, owner);
+    let pool_id = compute_pool_pda(
+        AccountId::new([0xAD; 32]),
+        CURVE_PROGRAM_ID,
+        token0,
+        token1,
+        owner,
+    );
     let pool = AccountWithMetadata {
         account: Account {
             program_owner: CURVE_PROGRAM_ID,
             data: Data::from(&PoolAccount {
+                namespace: AccountId::new([0xAD; 32]),
                 token0_definition_id: token0,
                 token1_definition_id: token1,
                 owner,
@@ -1066,7 +1150,7 @@ fn exact_output_dispatch_settles_fee_inclusive_input_and_requested_output_atomic
             ..Account::default()
         },
         is_authorized: false,
-        account_id: compute_config_pda(CURVE_PROGRAM_ID),
+        account_id: compute_config_pda(AccountId::new([0xAD; 32]), CURVE_PROGRAM_ID),
     };
 
     let (posts, calls) = process_instruction(
@@ -1138,11 +1222,13 @@ fn every_instruction_survives_the_guest_wire_format() {
     // `read_lee_inputs::<Instruction>()` in the guest deserialises with risc0's serde.
     let instructions = [
         Instruction::UpdateConfig {
+            namespace: AccountId::new([0xAD; 32]),
             admin: new_admin(),
             protocol_fee_bps: 100,
             treasury: new_treasury(),
         },
         Instruction::CreatePool {
+            namespace: AccountId::new([0xAD; 32]),
             token0_amount: 800,
             token1_amount: 25,
             virtual_reserve0: 1000,
@@ -1178,8 +1264,20 @@ fn the_pool_pda_hashes_the_pair_in_fixed_order() {
     let token0 = AccountId::new([1; 32]);
     let token1 = AccountId::new([2; 32]);
     assert_ne!(
-        compute_pool_pda(CURVE_PROGRAM_ID, token0, token1, owner),
-        compute_pool_pda(CURVE_PROGRAM_ID, token1, token0, owner)
+        compute_pool_pda(
+            AccountId::new([0xAD; 32]),
+            CURVE_PROGRAM_ID,
+            token0,
+            token1,
+            owner
+        ),
+        compute_pool_pda(
+            AccountId::new([0xAD; 32]),
+            CURVE_PROGRAM_ID,
+            token1,
+            token0,
+            owner
+        )
     );
 }
 
@@ -1188,7 +1286,403 @@ fn different_owners_have_distinct_pool_pdas_for_the_same_pair() {
     let token0 = AccountId::new([1; 32]);
     let token1 = AccountId::new([2; 32]);
     assert_ne!(
-        compute_pool_pda(CURVE_PROGRAM_ID, token0, token1, AccountId::new([3; 32]),),
-        compute_pool_pda(CURVE_PROGRAM_ID, token0, token1, AccountId::new([4; 32]),)
+        compute_pool_pda(
+            AccountId::new([0xAD; 32]),
+            CURVE_PROGRAM_ID,
+            token0,
+            token1,
+            AccountId::new([3; 32]),
+        ),
+        compute_pool_pda(
+            AccountId::new([0xAD; 32]),
+            CURVE_PROGRAM_ID,
+            token0,
+            token1,
+            AccountId::new([4; 32]),
+        )
+    );
+}
+
+// Two independent operators on the same program image. These helpers initialize through
+// the public dispatcher so the tests exercise the permissionless creation gate as well.
+fn namespace_config(namespace: AccountId, fee: u16, treasury: AccountId) -> AccountWithMetadata {
+    let empty = AccountWithMetadata {
+        account: Account::default(),
+        is_authorized: false,
+        account_id: compute_config_pda(namespace, CURVE_PROGRAM_ID),
+    };
+    let (posts, calls) = process_instruction(
+        vec![empty, signer(namespace)],
+        Instruction::UpdateConfig {
+            namespace,
+            admin: namespace,
+            protocol_fee_bps: fee,
+            treasury,
+        },
+        CURVE_PROGRAM_ID,
+    );
+    assert!(calls.is_empty());
+    let mut account = posts[0].account().clone();
+    account.program_owner = CURVE_PROGRAM_ID;
+    AccountWithMetadata {
+        account,
+        is_authorized: false,
+        account_id: compute_config_pda(namespace, CURVE_PROGRAM_ID),
+    }
+}
+
+fn namespace_pool(namespace: AccountId) -> AccountWithMetadata {
+    let state = PoolAccount {
+        namespace,
+        token0_definition_id: AccountId::new([1; 32]),
+        token1_definition_id: AccountId::new([2; 32]),
+        owner: AccountId::new([3; 32]),
+        pool: Pool::create(800, 100, 1000, 100, None, None).unwrap(),
+    };
+    AccountWithMetadata {
+        account: Account {
+            program_owner: CURVE_PROGRAM_ID,
+            data: Data::from(&state),
+            ..Account::default()
+        },
+        is_authorized: false,
+        account_id: compute_pool_pda(
+            namespace,
+            CURVE_PROGRAM_ID,
+            state.token0_definition_id,
+            state.token1_definition_id,
+            state.owner,
+        ),
+    }
+}
+
+#[test]
+fn permissionless_namespaces_have_independent_addresses_fees_and_updates() {
+    let a = AccountId::new([51; 32]);
+    let b = AccountId::new([52; 32]);
+    let config_a = namespace_config(a, 100, AccountId::new([61; 32]));
+    let config_b = namespace_config(b, 1000, AccountId::new([62; 32]));
+    let pool_a = namespace_pool(a);
+    let pool_b = namespace_pool(b);
+    assert_ne!(config_a.account_id, config_b.account_id);
+    assert_ne!(pool_a.account_id, pool_b.account_id);
+    let quote = |pool, config| {
+        swap_exact_input(
+            pool,
+            config,
+            None,
+            25,
+            0,
+            AccountId::new([2; 32]),
+            CURVE_PROGRAM_ID,
+        )
+        .1
+    };
+    let before_b = quote(pool_b.clone(), config_b.clone());
+    assert_eq!(quote(pool_a.clone(), config_a.clone()).protocol_fee, 1);
+    assert_eq!(before_b.protocol_fee, 3);
+    let posts = update_config(
+        a,
+        config_a.clone(),
+        signer(a),
+        a,
+        2000,
+        AccountId::new([63; 32]),
+        CURVE_PROGRAM_ID,
+    );
+    let updated_a = AccountWithMetadata {
+        account: posts[0].account().clone(),
+        ..config_a
+    };
+    let after_a = quote(pool_a, updated_a);
+    assert_eq!(after_a.protocol_fee, 5);
+    assert_eq!(after_a.treasury, AccountId::new([63; 32]));
+    assert_eq!(quote(pool_b, config_b), before_b);
+}
+
+#[test]
+#[should_panic(expected = "Config account ID does not match PDA")]
+fn swap_rejects_another_namespaces_config() {
+    let _ = swap_exact_input(
+        namespace_pool(AccountId::new([51; 32])),
+        namespace_config(AccountId::new([52; 32]), 0, new_treasury()),
+        None,
+        25,
+        0,
+        AccountId::new([2; 32]),
+        CURVE_PROGRAM_ID,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Authority is not the config admin")]
+fn namespace_admin_cannot_modify_another_namespace() {
+    let a = AccountId::new([51; 32]);
+    let b = AccountId::new([52; 32]);
+    let _ = update_config(
+        b,
+        namespace_config(b, 0, new_treasury()),
+        signer(a),
+        a,
+        100,
+        new_treasury(),
+        CURVE_PROGRAM_ID,
+    );
+}
+
+#[test]
+fn transfer_then_renounce_preserves_trading_but_permanently_removes_admin_power() {
+    let namespace = AccountId::new([51; 32]);
+    let successor = AccountId::new([52; 32]);
+    let config = namespace_config(namespace, 100, new_treasury());
+    let posts = update_config(
+        namespace,
+        config.clone(),
+        signer(namespace),
+        successor,
+        100,
+        new_treasury(),
+        CURVE_PROGRAM_ID,
+    );
+    let transferred = AccountWithMetadata {
+        account: posts[0].account().clone(),
+        ..config
+    };
+    assert!(
+        std::panic::catch_unwind(|| update_config(
+            namespace,
+            transferred.clone(),
+            signer(namespace),
+            namespace,
+            0,
+            new_treasury(),
+            CURVE_PROGRAM_ID
+        ))
+        .is_err()
+    );
+    let (posts, _) = process_instruction(
+        vec![transferred.clone(), signer(successor)],
+        Instruction::RenounceAdmin { namespace },
+        CURVE_PROGRAM_ID,
+    );
+    let renounced = AccountWithMetadata {
+        account: posts[0].account().clone(),
+        ..transferred
+    };
+    assert_eq!(
+        Config::try_from(&renounced.account.data).unwrap().admin,
+        AccountId::default()
+    );
+    assert_eq!(
+        swap_exact_input(
+            namespace_pool(namespace),
+            renounced.clone(),
+            None,
+            25,
+            0,
+            AccountId::new([2; 32]),
+            CURVE_PROGRAM_ID
+        )
+        .1
+        .protocol_fee,
+        1
+    );
+    for actor in [namespace, successor, AccountId::default()] {
+        assert!(
+            std::panic::catch_unwind(|| update_config(
+                namespace,
+                renounced.clone(),
+                signer(actor),
+                actor,
+                0,
+                new_treasury(),
+                CURVE_PROGRAM_ID
+            ))
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn execution_fee_update_respects_buy_and_sell_slippage() {
+    let namespace = AccountId::new([51; 32]);
+    let config = namespace_config(namespace, 0, new_treasury());
+    let pool = namespace_pool(namespace);
+    let token = AccountId::new([1; 32]);
+    let collateral = AccountId::new([2; 32]);
+    let buy = swap_exact_input(
+        pool.clone(),
+        config.clone(),
+        None,
+        25,
+        0,
+        collateral,
+        CURVE_PROGRAM_ID,
+    )
+    .1;
+    let sell = swap_exact_input(
+        pool.clone(),
+        config.clone(),
+        None,
+        250,
+        0,
+        token,
+        CURVE_PROGRAM_ID,
+    )
+    .1;
+    let posts = update_config(
+        namespace,
+        config.clone(),
+        signer(namespace),
+        namespace,
+        1000,
+        new_treasury(),
+        CURVE_PROGRAM_ID,
+    );
+    let updated = AccountWithMetadata {
+        account: posts[0].account().clone(),
+        ..config
+    };
+    assert!(
+        std::panic::catch_unwind(|| swap_exact_input(
+            pool.clone(),
+            updated.clone(),
+            None,
+            25,
+            buy.amount_out,
+            collateral,
+            CURVE_PROGRAM_ID
+        ))
+        .is_err()
+    );
+    assert!(
+        std::panic::catch_unwind(|| swap_exact_input(
+            pool.clone(),
+            updated.clone(),
+            None,
+            250,
+            sell.amount_out,
+            token,
+            CURVE_PROGRAM_ID
+        ))
+        .is_err()
+    );
+}
+
+#[test]
+fn swaps_reject_foreign_reserve_and_treasury_accounts() {
+    let namespace = AccountId::new([51; 32]);
+    let other = AccountId::new([52; 32]);
+    let pool = namespace_pool(namespace);
+    let foreign_pool = namespace_pool(other);
+    let config = namespace_config(namespace, 100, new_treasury());
+    let trader = AccountId::new([4; 32]);
+    let token = AccountId::new([1; 32]);
+    let collateral = AccountId::new([2; 32]);
+    let valid = vec![
+        pool.clone(),
+        config,
+        signer(trader),
+        holding_ata(trader, collateral, 100),
+        holding_ata(pool.account_id, collateral, 100),
+        holding_ata(pool.account_id, token, 800),
+        holding_ata(trader, token, 0),
+        ata(new_treasury(), collateral, Account::default()),
+        trusted_clock(1),
+    ];
+    let instruction = Instruction::SwapExactInput {
+        amount_in: 25,
+        min_amount_out: 0,
+        token_in: collateral,
+    };
+    let (_, calls) = process_instruction(valid.clone(), instruction.clone(), CURVE_PROGRAM_ID);
+    assert_eq!(calls.len(), 3);
+    for (index, foreign) in [
+        (4, holding_ata(foreign_pool.account_id, collateral, 100)),
+        (5, holding_ata(foreign_pool.account_id, token, 800)),
+        (
+            7,
+            ata(AccountId::new([62; 32]), collateral, Account::default()),
+        ),
+    ] {
+        let mut invalid = valid.clone();
+        invalid[index] = foreign;
+        assert!(
+            std::panic::catch_unwind(|| process_instruction(
+                invalid,
+                instruction.clone(),
+                CURVE_PROGRAM_ID
+            ))
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn pool_creation_binds_namespace_and_rejects_a_different_config() {
+    let a = AccountId::new([51; 32]);
+    let b = AccountId::new([52; 32]);
+    let build = |namespace| {
+        let f = valid_create_pool_accounts();
+        let pool_id = compute_pool_pda(
+            namespace,
+            CURVE_PROGRAM_ID,
+            f.token0_definition.account_id,
+            f.token1_definition.account_id,
+            f.owner.account_id,
+        );
+        let pool = AccountWithMetadata {
+            account_id: pool_id,
+            ..f.pool
+        };
+        let token0_ata = ata(pool_id, f.token0_definition.account_id, Account::default());
+        let token1_ata = ata(pool_id, f.token1_definition.account_id, Account::default());
+        let owner = f.owner.account_id;
+        (
+            vec![
+                pool,
+                f.owner,
+                f.token0_definition,
+                f.token1_definition,
+                f.owner_token0_ata,
+                f.owner_token1_ata,
+                token0_ata,
+                token1_ata,
+                trusted_clock(1),
+                namespace_config(namespace, 0, new_treasury()),
+            ],
+            Instruction::CreatePool {
+                namespace,
+                token0_amount: 800,
+                token1_amount: 0,
+                virtual_reserve0: 1000,
+                virtual_reserve1: 100,
+                close_timestamp: None,
+                close_on_depletion: None,
+                owner,
+                curve_program_id: CURVE_PROGRAM_ID,
+            },
+        )
+    };
+    let mut pool_ids = vec![];
+    for namespace in [a, b] {
+        let (accounts, instruction) = build(namespace);
+        pool_ids.push(accounts[0].account_id);
+        let (posts, calls) = process_instruction(accounts, instruction, CURVE_PROGRAM_ID);
+        assert_eq!(
+            PoolAccount::try_from(&posts[0].account().data)
+                .unwrap()
+                .namespace,
+            namespace
+        );
+        assert_eq!(posts.len(), 10);
+        assert_eq!(calls.len(), 3);
+    }
+    assert_ne!(pool_ids[0], pool_ids[1]);
+    let (mut accounts, instruction) = build(a);
+    accounts[9] = namespace_config(b, 0, new_treasury());
+    assert!(
+        std::panic::catch_unwind(|| process_instruction(accounts, instruction, CURVE_PROGRAM_ID))
+            .is_err()
     );
 }

@@ -23,6 +23,7 @@ pub fn process_instruction(
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     match instruction {
         Instruction::UpdateConfig {
+            namespace,
             admin,
             protocol_fee_bps,
             treasury,
@@ -32,6 +33,7 @@ pub fn process_instruction(
                 .expect("UpdateConfig requires exactly two accounts");
             (
                 update_config(
+                    namespace,
                     config,
                     authority,
                     admin,
@@ -42,7 +44,17 @@ pub fn process_instruction(
                 vec![],
             )
         }
+        Instruction::RenounceAdmin { namespace } => {
+            let [config, authority] = pre_states
+                .try_into()
+                .expect("RenounceAdmin requires exactly two accounts");
+            (
+                crate::update_config::renounce_admin(namespace, config, authority, self_program_id),
+                vec![],
+            )
+        }
         Instruction::CreatePool {
+            namespace,
             token0_amount,
             token1_amount,
             virtual_reserve0,
@@ -66,10 +78,13 @@ pub fn process_instruction(
                 pool_token0_ata,
                 pool_token1_ata,
                 clock,
+                config,
             ] = pre_states
                 .try_into()
-                .expect("CreatePool requires exactly nine accounts");
-            create_pool(
+                .expect("CreatePool requires exactly ten accounts");
+            crate::pool_swap::validated_config(&config, namespace, self_program_id);
+            let (mut posts, calls) = create_pool(
+                namespace,
                 pool,
                 owner_authority,
                 token0_definition,
@@ -78,7 +93,7 @@ pub fn process_instruction(
                 owner_token1_ata,
                 pool_token0_ata,
                 pool_token1_ata,
-                clock,
+                clock.clone(),
                 token0_amount,
                 token1_amount,
                 virtual_reserve0,
@@ -87,7 +102,10 @@ pub fn process_instruction(
                 close_on_depletion.map(Into::into),
                 owner,
                 curve_program_id,
-            )
+            );
+            posts.push(AccountPostState::new(clock.account));
+            posts.push(AccountPostState::new(config.account));
+            (posts, calls)
         }
         Instruction::SwapExactInput {
             amount_in,
@@ -238,6 +256,7 @@ fn settle_withdrawal(
     let mut signer = authority;
     signer.is_authorized = true;
     let seeds = vec![compute_pool_pda_seed(
+        pool_state.namespace,
         pool_state.token0_definition_id,
         pool_state.token1_definition_id,
         pool_state.owner,
@@ -372,6 +391,7 @@ fn settle_exact_input(
             settlement.amount_out,
         )
         .with_pda_seeds(vec![compute_pool_pda_seed(
+            pool_state.namespace,
             pool_state.token0_definition_id,
             pool_state.token1_definition_id,
             pool_state.owner,
@@ -386,6 +406,7 @@ fn settle_exact_input(
                 settlement.protocol_fee,
             )
             .with_pda_seeds(vec![compute_pool_pda_seed(
+                pool_state.namespace,
                 pool_state.token0_definition_id,
                 pool_state.token1_definition_id,
                 pool_state.owner,
@@ -497,6 +518,7 @@ fn settle_exact_output(
             settlement.amount_out,
         )
         .with_pda_seeds(vec![compute_pool_pda_seed(
+            pool_state.namespace,
             pool_state.token0_definition_id,
             pool_state.token1_definition_id,
             pool_state.owner,
@@ -511,6 +533,7 @@ fn settle_exact_output(
                 settlement.protocol_fee,
             )
             .with_pda_seeds(vec![compute_pool_pda_seed(
+                pool_state.namespace,
                 pool_state.token0_definition_id,
                 pool_state.token1_definition_id,
                 pool_state.owner,

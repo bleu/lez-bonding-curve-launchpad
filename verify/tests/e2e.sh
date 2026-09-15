@@ -129,7 +129,7 @@ printf '0\n' >"$tmp_dir/status-count"
 
 if ! E2E_COMMAND_LOG="$log_file" E2E_RESET_COMPLETE="$tmp_dir/reset" \
   E2E_ACCOUNT_COUNT="$tmp_dir/account-count" E2E_STATUS_COUNT="$tmp_dir/status-count" \
-  GENESIS_ADMIN_ACCOUNT=admin PATH="$tmp_dir/bin:$PATH" \
+  NAMESPACE_ADMIN_ACCOUNT=admin PATH="$tmp_dir/bin:$PATH" \
   "$e2e_script" >"$tmp_dir/stdout" 2>"$tmp_dir/stderr"; then
   cat "$tmp_dir/stderr" >&2
   fail "the managed localnet walkthrough should complete with the mocked live chain"
@@ -139,7 +139,7 @@ rg -qx 'localnet reset --yes --reset-wallet' "$log_file" \
   || fail "the walkthrough must reset its project-local wallet with the localnet"
 rg -qx 'localnet stop' "$log_file" \
   || fail "the walkthrough must stop the managed localnet on exit"
-rg -q -- '--json create-sale' "$log_file" \
+rg -q -- '--json --namespace admin create-sale' "$log_file" \
   || fail "the walkthrough must create the fixture through launchpad JSON output"
 rg -q -- '--creator Public/admin' "$log_file" \
   || fail "the walkthrough must pass the creator account to create-sale"
@@ -147,7 +147,7 @@ rg -q -- '--factory-program-path methods/target/factory.bin' "$log_file" \
   || fail "the walkthrough must pass the discovered factory binary to create-sale"
 rg -q -- '--curve-program-path methods/target/curve.bin' "$log_file" \
   || fail "the walkthrough must pass the discovered curve binary to create-sale"
-rg -q -- '--json buy-with-collateral' "$log_file" \
+rg -q -- '--json --namespace admin buy-with-collateral' "$log_file" \
   || fail "the walkthrough must exercise the collateral-input purchase path"
 
 printf 'ok: managed localnet is reset and stopped\n'
@@ -156,7 +156,7 @@ printf 'ok: managed localnet is reset and stopped\n'
 rm -f "$tmp_dir/reset"
 
 if E2E_COMMAND_LOG="$log_file" E2E_RESET_COMPLETE="$tmp_dir/reset" E2E_CURVE_DEPLOY_FAILURE=1 \
-  GENESIS_ADMIN_ACCOUNT=admin \
+  NAMESPACE_ADMIN_ACCOUNT=admin \
   PATH="$tmp_dir/bin:$PATH" "$e2e_script" >"$tmp_dir/stdout" 2>"$tmp_dir/stderr"; then
   fail "a failed curve deployment must make the walkthrough fail"
 fi

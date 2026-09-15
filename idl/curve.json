@@ -13,8 +13,8 @@
           "pda": {
             "seeds": [
               {
-                "kind": "const",
-                "value": "config"
+                "kind": "arg",
+                "path": "namespace"
               }
             ]
           }
@@ -27,6 +27,10 @@
         }
       ],
       "args": [
+        {
+          "name": "namespace",
+          "type": "account_id"
+        },
         {
           "name": "admin",
           "type": "account_id"
@@ -42,6 +46,37 @@
       ]
     },
     {
+      "name": "renounce_admin",
+      "accounts": [
+        {
+          "name": "config",
+          "writable": true,
+          "signer": false,
+          "init": false,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "arg",
+                "path": "namespace"
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "writable": false,
+          "signer": true,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "namespace",
+          "type": "account_id"
+        }
+      ]
+    },
+    {
       "name": "create_pool",
       "accounts": [
         {
@@ -51,10 +86,6 @@
           "init": true,
           "pda": {
             "seeds": [
-              {
-                "kind": "const",
-                "value": "pool"
-              },
               {
                 "kind": "account",
                 "path": "token0_definition"
@@ -66,6 +97,10 @@
               {
                 "kind": "arg",
                 "path": "owner"
+              },
+              {
+                "kind": "arg",
+                "path": "namespace"
               }
             ]
           }
@@ -117,9 +152,19 @@
           "writable": false,
           "signer": false,
           "init": false
+        },
+        {
+          "name": "config",
+          "writable": false,
+          "signer": false,
+          "init": false
         }
       ],
       "args": [
+        {
+          "name": "namespace",
+          "type": "account_id"
+        },
         {
           "name": "token0_amount",
           "type": "u128"
