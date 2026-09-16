@@ -504,17 +504,23 @@ fn update_config_rejects_an_unauthorized_authority() {
 #[test]
 fn stored_admin_rotates_the_admin_to_a_new_key() {
     let rotated_to = AccountId::new([3; 32]);
-    let post_states = update_config(
-        AccountId::new([0xAD; 32]),
-        initialized_config(new_admin()),
-        signer(new_admin()),
-        rotated_to,
-        40,
-        new_treasury(),
+    let pre_states = vec![initialized_config(new_admin()), signer(new_admin())];
+    let (post_states, _) = process_instruction(
+        pre_states.clone(),
+        Instruction::UpdateConfig {
+            namespace: AccountId::new([0xAD; 32]),
+            admin: rotated_to,
+            protocol_fee_bps: 40,
+            treasury: new_treasury(),
+        },
         CURVE_PROGRAM_ID,
     );
+    lee_core::program::validate_execution(&pre_states, &post_states, CURVE_PROGRAM_ID)
+        .expect("configuration must pass runtime account validation");
 
-    let [config_post]: [_; 1] = post_states.try_into().expect("exactly one post state");
+    let [config_post, authority_post]: [_; 2] =
+        post_states.try_into().expect("exactly two post states");
+    assert_eq!(authority_post.account(), &pre_states[1].account);
     let config =
         Config::try_from(&config_post.account().data).expect("post state holds a valid Config");
     assert_eq!(config.admin, rotated_to);
@@ -570,7 +576,7 @@ fn protocol_fee_boundaries_are_legal() {
             new_treasury(),
             CURVE_PROGRAM_ID,
         );
-        let [config_post]: [_; 1] = post_states.try_into().expect("exactly one post state");
+        let [config_post, _]: [_; 2] = post_states.try_into().expect("exactly two post states");
         let config =
             Config::try_from(&config_post.account().data).expect("post state holds a valid Config");
         assert_eq!(config.protocol_fee_bps, protocol_fee_bps);
@@ -627,17 +633,23 @@ fn update_config_rejects_a_forged_config_account() {
 
 #[test]
 fn first_update_config_initializes_the_config() {
-    let post_states = update_config(
-        AccountId::new([0xAD; 32]),
-        uninitialized_config(),
-        namespace_creator_signer(),
-        new_admin(),
-        100,
-        new_treasury(),
+    let pre_states = vec![uninitialized_config(), namespace_creator_signer()];
+    let (post_states, _) = process_instruction(
+        pre_states.clone(),
+        Instruction::UpdateConfig {
+            namespace: AccountId::new([0xAD; 32]),
+            admin: new_admin(),
+            protocol_fee_bps: 100,
+            treasury: new_treasury(),
+        },
         CURVE_PROGRAM_ID,
     );
+    lee_core::program::validate_execution(&pre_states, &post_states, CURVE_PROGRAM_ID)
+        .expect("configuration must pass runtime account validation");
 
-    let [config_post]: [_; 1] = post_states.try_into().expect("exactly one post state");
+    let [config_post, authority_post]: [_; 2] =
+        post_states.try_into().expect("exactly two post states");
+    assert_eq!(authority_post.account(), &pre_states[1].account);
     let config =
         Config::try_from(&config_post.account().data).expect("post state holds a valid Config");
     assert_eq!(config.admin, new_admin());

@@ -76,10 +76,13 @@ pub fn update_config(
         treasury,
     });
 
-    vec![AccountPostState::new_claimed_if_default(
-        config_post,
-        Claim::Pda(compute_config_pda_seed(namespace)),
-    )]
+    vec![
+        AccountPostState::new_claimed_if_default(
+            config_post,
+            Claim::Pda(compute_config_pda_seed(namespace)),
+        ),
+        AccountPostState::new(authority.account),
+    ]
 }
 
 /// Renunciation preserves the namespace and fee settings, but removes all admin power.
