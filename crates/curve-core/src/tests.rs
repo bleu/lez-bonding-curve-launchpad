@@ -1460,11 +1460,14 @@ fn transfer_then_renounce_preserves_trading_but_permanently_removes_admin_power(
         ))
         .is_err()
     );
+    let pre_states = vec![transferred.clone(), signer(successor)];
     let (posts, _) = process_instruction(
-        vec![transferred.clone(), signer(successor)],
+        pre_states.clone(),
         Instruction::RenounceAdmin { namespace },
         CURVE_PROGRAM_ID,
     );
+    lee_core::program::validate_execution(&pre_states, &posts, CURVE_PROGRAM_ID)
+        .expect("renunciation must pass runtime account validation");
     let renounced = AccountWithMetadata {
         account: posts[0].account().clone(),
         ..transferred

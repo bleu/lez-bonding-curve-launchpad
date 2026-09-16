@@ -116,5 +116,8 @@ pub fn renounce_admin(
     data.admin = AccountId::default();
     let mut post = config.account;
     post.data = Data::from(&data);
-    vec![AccountPostState::new(post)]
+    vec![
+        AccountPostState::new(post),
+        AccountPostState::new(authority.account),
+    ]
 }
