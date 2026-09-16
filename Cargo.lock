@@ -3361,6 +3361,7 @@ dependencies = [
  "common",
  "curve-core",
  "factory-core",
+ "hex",
  "lee",
  "lee_core",
  "pool",
@@ -3370,6 +3371,7 @@ dependencies = [
  "sequencer_service_rpc",
  "serde",
  "token_core",
+ "tokio",
  "wallet",
 ]
 

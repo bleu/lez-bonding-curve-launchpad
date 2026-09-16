@@ -33,6 +33,25 @@ pub mod factory {
     ) {}
 
     #[instruction]
+    pub fn continue_creation(
+        #[account(mut)] factory: AccountWithMetadata,
+        token_definition: AccountWithMetadata,
+        #[account(mut)] mint: AccountWithMetadata,
+        metadata: AccountWithMetadata,
+        #[account(mut)] creator_escrow: AccountWithMetadata,
+        #[account(signer)] creator: AccountWithMetadata,
+        #[account(mut)] creator_token_ata: AccountWithMetadata,
+        collateral_definition: AccountWithMetadata,
+        #[account(mut)] factory_token_ata: AccountWithMetadata,
+        #[account(mut)] factory_collateral_ata: AccountWithMetadata,
+        #[account(mut)] pool: AccountWithMetadata,
+        #[account(mut)] pool_token_ata: AccountWithMetadata,
+        #[account(mut)] pool_collateral_ata: AccountWithMetadata,
+        clock: AccountWithMetadata,
+        config: AccountWithMetadata,
+    ) {}
+
+    #[instruction]
     pub fn close_factory_pool(
         factory: AccountWithMetadata,
         #[account(mut)] pool: AccountWithMetadata,

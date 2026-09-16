@@ -326,7 +326,7 @@ withdraw=$(run_launchpad_json "creator withdrawal" withdraw \
   --creator "Public/$creator" \
   --factory-program-path "$factory_program_path" \
   --curve-program-path "$curve_program_path")
-jq -e '.status == "submitted"' >/dev/null <<<"$withdraw" \
-  || fail "creator withdrawal JSON did not report submission"
+jq -e '.status == "complete"' >/dev/null <<<"$withdraw" \
+  || fail "creator withdrawal JSON did not report completion"
 
 printf 'walkthrough complete: launch, buys, sell, auto-close, unlock, withdrawal\n'

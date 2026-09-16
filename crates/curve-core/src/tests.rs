@@ -145,6 +145,7 @@ fn holding_ata(
 fn trusted_clock(timestamp: u64) -> AccountWithMetadata {
     AccountWithMetadata {
         account: Account {
+            program_owner: [88; 8],
             data: Data::try_from(
                 clock_core::ClockAccountData {
                     block_id: 7,
@@ -225,6 +226,7 @@ fn create_pool_with_accounts(
         owner_id,
         CURVE_PROGRAM_ID,
         None,
+        false,
     );
 }
 
@@ -313,6 +315,7 @@ fn create_pool_rejects_an_end_timestamp_at_the_trusted_time_boundary() {
         owner_id,
         CURVE_PROGRAM_ID,
         None,
+        false,
     );
 }
 
@@ -343,6 +346,7 @@ fn create_pool_rejects_a_substituted_clock_even_without_an_end_timestamp() {
         owner_id,
         CURVE_PROGRAM_ID,
         None,
+        false,
     );
 }
 
@@ -374,6 +378,7 @@ fn owner_can_open_a_pool_and_atomically_fund_both_ata_reserves() {
         owner_id,
         CURVE_PROGRAM_ID,
         None,
+        false,
     );
 
     let pool_account = PoolAccount::try_from(&post_states[0].account().data)
@@ -460,6 +465,7 @@ fn zero_initial_reserve_creates_its_ata_without_emitting_a_zero_transfer() {
         owner_id,
         CURVE_PROGRAM_ID,
         None,
+        false,
     );
 
     assert_eq!(
@@ -679,6 +685,7 @@ fn first_update_config_initializes_the_config() {
 #[test]
 fn pool_state_round_trips_with_ordered_tokens_owner_and_optional_expiry() {
     let pool_account = PoolAccount {
+        funded: true,
         owner_program: None,
         namespace: AccountId::new([0xAD; 32]),
         token0_definition_id: AccountId::new([1; 32]),
@@ -700,6 +707,7 @@ fn stored_pool_owner_can_close_the_pool() {
     let token0 = AccountId::new([1; 32]);
     let token1 = AccountId::new([2; 32]);
     let pool_account = PoolAccount {
+        funded: true,
         owner_program: None,
         namespace: AccountId::new([0xAD; 32]),
         token0_definition_id: token0,
@@ -723,6 +731,20 @@ fn stored_pool_owner_can_close_the_pool() {
         ),
     };
 
+    let mut pending = pool.clone();
+    let mut pending_state = pool_account.clone();
+    pending_state.funded = false;
+    pending.account.data = Data::from(&pending_state);
+    assert!(
+        std::panic::catch_unwind(|| process_instruction(
+            vec![pending, signer(owner), trusted_clock(1)],
+            Instruction::ClosePool,
+            CURVE_PROGRAM_ID,
+        ))
+        .is_err(),
+        "pending pools cannot close"
+    );
+
     let [post, _, _]: [_; 3] = close_pool(pool, signer(owner), trusted_clock(1), CURVE_PROGRAM_ID)
         .try_into()
         .expect("one post state");
@@ -737,6 +759,7 @@ fn an_unrelated_signer_cannot_close_the_pool() {
     let token0 = AccountId::new([1; 32]);
     let token1 = AccountId::new([2; 32]);
     let pool_account = PoolAccount {
+        funded: true,
         owner_program: None,
         namespace: AccountId::new([0xAD; 32]),
         token0_definition_id: token0,
@@ -768,6 +791,7 @@ fn expired_pool_owner_can_withdraw_both_reserves_without_closing_first() {
     let token0 = AccountId::new([1; 32]);
     let token1 = AccountId::new([2; 32]);
     let pool_account = PoolAccount {
+        funded: true,
         owner_program: None,
         namespace: AccountId::new([0xAD; 32]),
         token0_definition_id: token0,
@@ -832,6 +856,7 @@ fn withdraw_dispatch_transfers_both_real_reserves_and_retires_the_pool() {
         account: Account {
             program_owner: CURVE_PROGRAM_ID,
             data: Data::from(&PoolAccount {
+                funded: true,
                 owner_program: None,
                 namespace: AccountId::new([0xAD; 32]),
                 token0_definition_id: token0,
@@ -849,21 +874,44 @@ fn withdraw_dispatch_transfers_both_real_reserves_and_retires_the_pool() {
     let owner_token0 = holding_ata(owner, token0, 0);
     let owner_token1 = holding_ata(owner, token1, 0);
 
-    let (posts, calls) = process_instruction(
-        vec![
-            pool,
-            signer(owner),
-            owner_token0.clone(),
-            owner_token1.clone(),
-            pool_token0.clone(),
-            pool_token1.clone(),
-            trusted_clock(42),
-        ],
-        Instruction::WithdrawReserves,
-        CURVE_PROGRAM_ID,
+    let pre = vec![
+        pool,
+        signer(owner),
+        owner_token0.clone(),
+        owner_token1.clone(),
+        pool_token0.clone(),
+        pool_token1.clone(),
+        trusted_clock(42),
+    ];
+    let mut pending = pre.clone();
+    let mut pending_state = PoolAccount::try_from(&pending[0].account.data).unwrap();
+    pending_state.funded = false;
+    pending[0].account.data = Data::from(&pending_state);
+    assert!(
+        std::panic::catch_unwind(|| process_instruction(
+            pending,
+            Instruction::WithdrawReserves,
+            CURVE_PROGRAM_ID
+        ))
+        .is_err(),
+        "pending pools cannot settle"
     );
+    let (posts, calls) =
+        process_instruction(pre.clone(), Instruction::WithdrawReserves, CURVE_PROGRAM_ID);
 
-    let [post, _, _]: [_; 3] = posts
+    lee_core::program::validate_execution(&pre, &posts, CURVE_PROGRAM_ID)
+        .expect("complete account outputs");
+    for call in &calls {
+        if call.pre_states[0].account_id == pre[0].account_id {
+            assert_eq!(
+                &call.pre_states[0].account,
+                posts[0].account(),
+                "chained pool authority uses updated state"
+            );
+        }
+    }
+
+    let [post, ..]: [_; 7] = posts
         .try_into()
         .expect("only the pool state changes directly");
     let retired = PoolAccount::try_from(&post.account().data).expect("valid pool state");
@@ -914,6 +962,7 @@ fn exact_input_sell_charges_the_protocol_fee_in_collateral() {
     let token0 = AccountId::new([1; 32]);
     let token1 = AccountId::new([2; 32]);
     let pool_account = PoolAccount {
+        funded: true,
         owner_program: None,
         namespace: AccountId::new([0xAD; 32]),
         token0_definition_id: token0,
@@ -978,6 +1027,7 @@ fn token0_to_token1_exact_input_settles_all_three_transfers() {
         account: Account {
             program_owner: CURVE_PROGRAM_ID,
             data: Data::from(&PoolAccount {
+                funded: true,
                 owner_program: None,
                 namespace: AccountId::new([0xAD; 32]),
                 token0_definition_id: token0,
@@ -996,18 +1046,36 @@ fn token0_to_token1_exact_input_settles_all_three_transfers() {
     let pool_token1 = holding_ata(pool_id, token1, 100);
     let treasury_token1 = ata(new_treasury(), token1, Account::default());
 
+    let pre = vec![
+        pool,
+        initialized_config(new_admin()),
+        signer(participant),
+        participant_token0.clone(),
+        pool_token0.clone(),
+        pool_token1.clone(),
+        participant_token1.clone(),
+        treasury_token1.clone(),
+        trusted_clock(41),
+    ];
+    let mut pending = pre.clone();
+    let mut pending_state = PoolAccount::try_from(&pending[0].account.data).unwrap();
+    pending_state.funded = false;
+    pending[0].account.data = Data::from(&pending_state);
+    assert!(
+        std::panic::catch_unwind(|| process_instruction(
+            pending,
+            Instruction::SwapExactInput {
+                amount_in: 250,
+                min_amount_out: 19,
+                token_in: token0
+            },
+            CURVE_PROGRAM_ID
+        ))
+        .is_err(),
+        "pending pools cannot settle"
+    );
     let (posts, calls) = process_instruction(
-        vec![
-            pool,
-            initialized_config(new_admin()),
-            signer(participant),
-            participant_token0.clone(),
-            pool_token0.clone(),
-            pool_token1.clone(),
-            participant_token1.clone(),
-            treasury_token1.clone(),
-            trusted_clock(41),
-        ],
+        pre.clone(),
         Instruction::SwapExactInput {
             amount_in: 250,
             min_amount_out: 19,
@@ -1016,7 +1084,19 @@ fn token0_to_token1_exact_input_settles_all_three_transfers() {
         CURVE_PROGRAM_ID,
     );
 
-    let [post]: [_; 1] = posts
+    lee_core::program::validate_execution(&pre, &posts, CURVE_PROGRAM_ID)
+        .expect("complete account outputs");
+    for call in &calls {
+        if call.pre_states[0].account_id == pre[0].account_id {
+            assert_eq!(
+                &call.pre_states[0].account,
+                posts[0].account(),
+                "chained pool authority uses updated state"
+            );
+        }
+    }
+
+    let [post, ..]: [_; 9] = posts
         .try_into()
         .expect("only the pool state changes directly");
     let updated = PoolAccount::try_from(&post.account().data).expect("valid pool state");
@@ -1089,6 +1169,7 @@ fn exact_output_handler_caps_fee_inclusive_input_in_the_reverse_direction() {
     let token0 = AccountId::new([1; 32]);
     let token1 = AccountId::new([2; 32]);
     let pool_account = PoolAccount {
+        funded: true,
         owner_program: None,
         namespace: AccountId::new([0xAD; 32]),
         token0_definition_id: token0,
@@ -1156,6 +1237,7 @@ fn exact_output_dispatch_settles_fee_inclusive_input_and_requested_output_atomic
         account: Account {
             program_owner: CURVE_PROGRAM_ID,
             data: Data::from(&PoolAccount {
+                funded: true,
                 owner_program: None,
                 namespace: AccountId::new([0xAD; 32]),
                 token0_definition_id: token0,
@@ -1187,18 +1269,36 @@ fn exact_output_dispatch_settles_fee_inclusive_input_and_requested_output_atomic
         account_id: compute_config_pda(AccountId::new([0xAD; 32]), CURVE_PROGRAM_ID),
     };
 
+    let pre = vec![
+        pool,
+        config,
+        signer(participant),
+        participant_token1.clone(),
+        pool_token1.clone(),
+        pool_token0.clone(),
+        participant_token0.clone(),
+        treasury_token1,
+        trusted_clock(41),
+    ];
+    let mut pending = pre.clone();
+    let mut pending_state = PoolAccount::try_from(&pending[0].account.data).unwrap();
+    pending_state.funded = false;
+    pending[0].account.data = Data::from(&pending_state);
+    assert!(
+        std::panic::catch_unwind(|| process_instruction(
+            pending,
+            Instruction::SwapExactOutput {
+                amount_out: 200,
+                max_amount_in: 28,
+                token_in: token1
+            },
+            CURVE_PROGRAM_ID
+        ))
+        .is_err(),
+        "pending pools cannot settle"
+    );
     let (posts, calls) = process_instruction(
-        vec![
-            pool,
-            config,
-            signer(participant),
-            participant_token1.clone(),
-            pool_token1.clone(),
-            pool_token0.clone(),
-            participant_token0.clone(),
-            treasury_token1,
-            trusted_clock(41),
-        ],
+        pre.clone(),
         Instruction::SwapExactOutput {
             amount_out: 200,
             max_amount_in: 28,
@@ -1207,7 +1307,19 @@ fn exact_output_dispatch_settles_fee_inclusive_input_and_requested_output_atomic
         CURVE_PROGRAM_ID,
     );
 
-    let [post]: [_; 1] = posts
+    lee_core::program::validate_execution(&pre, &posts, CURVE_PROGRAM_ID)
+        .expect("complete account outputs");
+    for call in &calls {
+        if call.pre_states[0].account_id == pre[0].account_id {
+            assert_eq!(
+                &call.pre_states[0].account,
+                posts[0].account(),
+                "chained pool authority uses updated state"
+            );
+        }
+    }
+
+    let [post, ..]: [_; 9] = posts
         .try_into()
         .expect("only the pool state changes directly");
     let updated = PoolAccount::try_from(&post.account().data).expect("valid pool state");
@@ -1262,6 +1374,7 @@ fn every_instruction_survives_the_guest_wire_format() {
             treasury: new_treasury(),
         },
         Instruction::CreatePool {
+            defer_funding: false,
             owner_program: None,
             namespace: AccountId::new([0xAD; 32]),
             token0_amount: 800,
@@ -1369,6 +1482,7 @@ fn namespace_config(namespace: AccountId, fee: u16, treasury: AccountId) -> Acco
 
 fn namespace_pool(namespace: AccountId) -> AccountWithMetadata {
     let state = PoolAccount {
+        funded: true,
         owner_program: None,
         namespace,
         token0_definition_id: AccountId::new([1; 32]),
@@ -1693,6 +1807,7 @@ fn pool_creation_binds_namespace_and_rejects_a_different_config() {
                 namespace_config(namespace, 0, new_treasury()),
             ],
             Instruction::CreatePool {
+                defer_funding: false,
                 owner_program: None,
                 namespace,
                 token0_amount: 800,

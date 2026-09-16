@@ -183,6 +183,102 @@
       ]
     },
     {
+      "name": "continue_creation",
+      "accounts": [
+        {
+          "name": "factory",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "token_definition",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "mint",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "metadata",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "creator_escrow",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "creator",
+          "writable": false,
+          "signer": true,
+          "init": false
+        },
+        {
+          "name": "creator_token_ata",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "collateral_definition",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "factory_token_ata",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "factory_collateral_ata",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "pool",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "pool_token_ata",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "pool_collateral_ata",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "clock",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "config",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "close_factory_pool",
       "accounts": [
         {

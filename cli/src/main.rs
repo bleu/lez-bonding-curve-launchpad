@@ -13,10 +13,9 @@ use launchpad_client::{
     BuyRequest, BuyWithCollateralRequest, CreateSaleRequest, PrivateBuyRequest, SellRequest,
     build_buy_invocation, build_buy_with_collateral_invocation,
     build_claim_creator_allocation_invocation, build_close_factory_pool_invocation,
-    build_create_sale_invocation, build_sell_invocation,
-    build_withdraw_factory_proceeds_invocation, load_curve_config, load_factory_pool,
-    load_factory_state, load_program, parse_account_id, quote_buy, quote_buy_with_collateral,
-    quote_sell, submit_private_buy, submit_public_invocation,
+    build_sell_invocation, load_curve_config, load_factory_pool, load_factory_state, load_program,
+    parse_account_id, quote_buy, quote_buy_with_collateral, quote_sell, submit_private_buy,
+    submit_public_invocation,
 };
 use serde::Serialize;
 use wallet::WalletCore;
@@ -547,33 +546,19 @@ async fn withdraw_factory_proceeds(
     let factory_program = load_program(&args.factory_program_path)?;
     let curve_program = load_program(&args.curve_program_path)?;
     let collateral_definition = parse_account_id(&args.collateral_definition)?;
-    let build = |creator| {
-        let invocation = build_withdraw_factory_proceeds_invocation(
-            namespace,
-            factory_program.id(),
-            curve_program.id(),
-            creator,
-            args.launch.launch_salt,
-            collateral_definition,
-        );
-        Ok(invocation)
-    };
     let mut wallet = WalletCore::from_env().context("opening the project wallet")?;
-    let transaction_hash = submit_role(
+    let router = router.map(load_program).transpose()?;
+    let receipt = launchpad_client::FactorySession::new(
         &mut wallet,
         &factory_program,
-        vec![curve_program.clone()],
+        &curve_program,
+        router.as_ref(),
+        namespace,
         &args.creator,
-        router,
-        build,
     )
+    .withdraw(args.launch.launch_salt, collateral_definition)
     .await?;
-    print_submission(
-        json,
-        "factory withdrawal",
-        transaction_hash,
-        args.launch.launch_salt,
-    )
+    print_lifecycle(json, "factory withdrawal", args.launch.launch_salt, receipt)
 }
 
 async fn price(namespace: lee::AccountId, json: bool, args: PriceArgs) -> Result<()> {
@@ -643,24 +628,37 @@ async fn sale_snapshot(namespace: lee::AccountId, json: bool, args: LaunchReadAr
         args.launch.launch_salt,
     )
     .await?;
-    let pool = load_factory_pool(
-        namespace,
-        &wallet,
-        factory_program.id(),
-        curve_program.id(),
-        args.launch.launch_salt,
-        collateral_definition,
-    )
-    .await?;
-    let status = match pool.pool.lifecycle {
-        pool::PoolLifecycle::Open => "open",
-        pool::PoolLifecycle::Closed => "closed",
-        pool::PoolLifecycle::Withdrawn => "withdrawn",
+    let active = factory.creation_stage == launchpad_client::CreationStage::Active;
+    let pool = if active {
+        Some(
+            load_factory_pool(
+                namespace,
+                &wallet,
+                factory_program.id(),
+                curve_program.id(),
+                args.launch.launch_salt,
+                collateral_definition,
+            )
+            .await?
+            .pool,
+        )
+    } else {
+        None
     };
-    let tokens_sold = factory
-        .sale_reserve
-        .checked_sub(pool.pool.real_reserve0)
-        .context("factory pool token reserve exceeds its configured sale quantity")?;
+    let status = match pool.as_ref().map(|p| p.lifecycle) {
+        None => "preparing",
+        Some(pool::PoolLifecycle::Open) => "open",
+        Some(pool::PoolLifecycle::Closed) => "closed",
+        Some(pool::PoolLifecycle::Withdrawn) => "withdrawn",
+    };
+    let tokens_sold = if let Some(pool) = &pool {
+        factory
+            .sale_reserve
+            .checked_sub(pool.real_reserve0)
+            .context("factory pool token reserve exceeds its configured sale quantity")?
+    } else {
+        0
+    };
     let config = load_curve_config(namespace, &wallet, curve_program.id()).await?;
     let snapshot = SaleSnapshot {
         namespace: namespace.to_string(),
@@ -679,11 +677,17 @@ async fn sale_snapshot(namespace: lee::AccountId, json: bool, args: LaunchReadAr
         creator_allocation_claimed: factory.creator_allocation_claimed,
         sale_quantity: factory.sale_reserve,
         tokens_sold,
-        real_token_reserve: pool.pool.real_reserve0,
-        real_collateral_reserve: pool.pool.real_reserve1,
-        virtual_token_reserve: pool.pool.virtual_reserve0,
-        virtual_collateral_reserve: pool.pool.virtual_reserve1,
-        close_timestamp: pool.pool.close_timestamp,
+        real_token_reserve: pool.as_ref().map_or(0, |p| p.real_reserve0),
+        real_collateral_reserve: pool.as_ref().map_or(0, |p| p.real_reserve1),
+        virtual_token_reserve: pool
+            .as_ref()
+            .map_or(factory.virtual_token_reserve, |p| p.virtual_reserve0),
+        virtual_collateral_reserve: pool
+            .as_ref()
+            .map_or(factory.virtual_collateral_reserve, |p| p.virtual_reserve1),
+        close_timestamp: pool
+            .as_ref()
+            .map_or(factory.end_timestamp, |p| p.close_timestamp),
     };
     if json {
         println!("{}", serde_json::to_string(&snapshot)?);
@@ -1010,54 +1014,64 @@ async fn create_sale(
     let factory_program = load_program(&args.factory_program_path)?;
     let curve_program = load_program(&args.curve_program_path)?;
     let collateral_definition = parse_account_id(&args.collateral_definition)?;
-    let build = |creator| {
-        let invocation = build_create_sale_invocation(
-            namespace,
-            factory_program.id(),
-            curve_program.id(),
-            creator,
-            CreateSaleRequest {
-                launch_salt: args.launch.launch_salt,
-                name: args.name,
-                uri: args.uri,
-                sale_reserve: args.sale_reserve,
-                dex_seed_reserve: args.dex_seed_reserve,
-                creator_allocation: args.creator_allocation,
-                virtual_token_reserve: args.virtual_token_reserve,
-                virtual_collateral_reserve: args.virtual_collateral_reserve,
-                end_timestamp: args.end_timestamp,
-                collateral_definition,
-            },
-        )?;
-        Ok(invocation)
+    let request = CreateSaleRequest {
+        launch_salt: args.launch.launch_salt,
+        name: args.name,
+        uri: args.uri,
+        sale_reserve: args.sale_reserve,
+        dex_seed_reserve: args.dex_seed_reserve,
+        creator_allocation: args.creator_allocation,
+        virtual_token_reserve: args.virtual_token_reserve,
+        virtual_collateral_reserve: args.virtual_collateral_reserve,
+        end_timestamp: args.end_timestamp,
+        collateral_definition,
     };
     let mut wallet = WalletCore::from_env().context("opening the project wallet")?;
-    let transaction_hash = submit_role(
+    let router = router.map(load_program).transpose()?;
+    let receipt = launchpad_client::FactorySession::new(
         &mut wallet,
         &factory_program,
-        vec![curve_program.clone()],
+        &curve_program,
+        router.as_ref(),
+        namespace,
         &args.creator,
-        router,
-        build,
     )
+    .create_sale(request)
     .await?;
-    let output = SubmittedLaunch {
-        status: "submitted",
-        transaction_hash: hex::encode(transaction_hash),
-        launch_salt: hex::encode(args.launch.launch_salt),
-    };
+    print_lifecycle(json, "factory launch", args.launch.launch_salt, receipt)
+}
+
+fn print_lifecycle(
+    json: bool,
+    label: &str,
+    salt: [u8; 32],
+    receipt: launchpad_client::LifecycleReceipt,
+) -> Result<()> {
+    let hashes: Vec<_> = receipt.transaction_hashes.iter().map(hex::encode).collect();
+    let holders: Vec<_> = receipt
+        .authority_holders
+        .iter()
+        .map(ToString::to_string)
+        .collect();
     if json {
-        println!("{}", serde_json::to_string(&output)?);
+        println!(
+            "{}",
+            serde_json::json!({"status":"complete","launch_salt":hex::encode(salt),"transaction_hash":hashes.last(),"transaction_hashes":hashes,"authority_holders":holders})
+        );
     } else {
         println!(
-            "submitted factory launch: tx_hash={} launch_salt={}",
-            output.transaction_hash, output.launch_salt
+            "completed {label}: {} confirmed stages; launch_salt={}",
+            hashes.len(),
+            hex::encode(salt)
         );
+        for (hash, holder) in hashes.iter().zip(holders) {
+            println!("tx_hash={hash} authority_holder=Public/{holder}");
+        }
     }
     Ok(())
 }
 
-async fn submit_role<I: Serialize>(
+async fn submit_role<I: launchpad_client::PrivateInstruction>(
     wallet: &mut WalletCore,
     program: &lee::program::Program,
     dependencies: Vec<lee::program::Program>,

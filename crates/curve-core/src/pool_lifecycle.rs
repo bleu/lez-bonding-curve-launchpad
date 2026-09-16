@@ -23,6 +23,7 @@ pub fn close_pool(
     assert!(owner.is_authorized, "Owner authorization is missing");
     let mut pool_account =
         PoolAccount::try_from(&pool.account.data).expect("Pool account holds invalid data");
+    assert!(pool_account.funded, "Pool funding is pending");
     assert_eq!(
         crate::authority::pool_owner(&owner, pool_account.owner_program),
         pool_account.owner,
@@ -75,6 +76,7 @@ pub fn withdraw_reserves(
     assert!(owner.is_authorized, "Owner authorization is missing");
     let mut pool_account =
         PoolAccount::try_from(&pool.account.data).expect("Pool account holds invalid data");
+    assert!(pool_account.funded, "Pool funding is pending");
     assert_eq!(
         crate::authority::pool_owner(&owner, pool_account.owner_program),
         pool_account.owner,

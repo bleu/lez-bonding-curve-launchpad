@@ -37,6 +37,7 @@ pub fn create_pool(
     expected_owner: AccountId,
     curve_program_id: ProgramId,
     owner_program: Option<(ProgramId, [u8; 32])>,
+    defer_funding: bool,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     let ata_program_id = ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID;
     assert!(owner.is_authorized, "Owner authorization is missing");
@@ -103,7 +104,10 @@ pub fn create_pool(
     );
     let now = clock_core::ClockAccountData::from_bytes(clock.account.data.as_ref()).timestamp;
     if let Some(close) = close_timestamp {
-        assert!(close > now, "Close timestamp must be in the future");
+        assert!(
+            defer_funding || close > now,
+            "Close timestamp must be in the future"
+        );
     }
     let pool = Pool::create(
         token0_amount,
@@ -116,6 +120,7 @@ pub fn create_pool(
     .expect("Pool parameters are invalid");
     let mut pool_post = pool_account.account;
     pool_post.data = Data::from(&PoolAccount {
+        funded: !defer_funding,
         namespace,
         token0_definition_id: token0_definition.account_id,
         token1_definition_id: token1_definition.account_id,
@@ -153,7 +158,7 @@ pub fn create_pool(
         ),
     ];
 
-    if token0_amount != 0 {
+    if !defer_funding && token0_amount != 0 {
         chained_calls.push(funding_call(
             &owner,
             &owner_token0_ata,
@@ -163,7 +168,7 @@ pub fn create_pool(
             ata_program_id,
         ));
     }
-    if token1_amount != 0 {
+    if !defer_funding && token1_amount != 0 {
         chained_calls.push(funding_call(
             &owner,
             &owner_token1_ata,
@@ -204,19 +209,7 @@ fn funding_call(
     amount: u128,
     ata_program_id: ProgramId,
 ) -> ChainedCall {
-    let definition = TokenDefinition::try_from(&definition_account.account.data)
-        .expect("token definition account must hold a valid definition");
-    let initialized_destination = AccountWithMetadata {
-        account: Account {
-            program_owner: definition_account.account.program_owner,
-            data: Data::from(&TokenHolding::zeroized_from_definition(
-                definition_account.account_id,
-                &definition,
-            )),
-            ..Account::default()
-        },
-        ..destination.clone()
-    };
+    let initialized_destination = after_ata_creation(destination, definition_account);
     ChainedCall::new(
         ata_program_id,
         vec![owner.clone(), source.clone(), initialized_destination],
@@ -225,4 +218,132 @@ fn funding_call(
             amount,
         },
     )
+}
+
+/// Completes a prepared pool in a separate atomic funding transaction.
+pub fn activate_pool(
+    pre: Vec<AccountWithMetadata>,
+    curve_program_id: ProgramId,
+) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+    let [
+        pool,
+        owner,
+        definition0,
+        definition1,
+        source0,
+        source1,
+        reserve0,
+        reserve1,
+        clock,
+        config,
+    ]: [_; 10] = pre
+        .clone()
+        .try_into()
+        .expect("ActivatePool requires ten accounts");
+    let mut state = PoolAccount::try_from(&pool.account.data).expect("valid prepared pool");
+    assert!(!state.funded, "Pool is already funded");
+    assert_eq!(
+        crate::authority::pool_owner(&owner, state.owner_program),
+        state.owner,
+        "Authority is not the pool owner"
+    );
+    assert_eq!(
+        pool.account_id,
+        crate::compute_pool_pda(
+            state.namespace,
+            curve_program_id,
+            state.token0_definition_id,
+            state.token1_definition_id,
+            state.owner
+        ),
+        "Pool account ID does not match PDA"
+    );
+    assert_eq!(
+        definition0.account_id, state.token0_definition_id,
+        "Wrong token0 definition"
+    );
+    assert_eq!(
+        definition1.account_id, state.token1_definition_id,
+        "Wrong token1 definition"
+    );
+    crate::pool_swap::validated_config(&config, state.namespace, curve_program_id);
+    assert_eq!(
+        clock.account_id,
+        clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID,
+        "Trusted clock required"
+    );
+    let now = clock_core::ClockAccountData::from_bytes(clock.account.data.as_ref()).timestamp;
+    let mut calls = vec![];
+    for (source, reserve, definition, amount) in [
+        (&source0, &reserve0, &definition0, state.pool.real_reserve0),
+        (&source1, &reserve1, &definition1, state.pool.real_reserve1),
+    ] {
+        associated_token_account_core::verify_ata_and_get_seed(
+            source,
+            &owner,
+            definition.account_id,
+            ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID,
+        );
+        associated_token_account_core::verify_ata_and_get_seed(
+            reserve,
+            &pool,
+            definition.account_id,
+            ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID,
+        );
+        assert_ne!(
+            reserve.account,
+            Account::default(),
+            "Reserve ATA must be prepared"
+        );
+        if amount != 0 {
+            calls.push(funding_call(
+                &owner,
+                source,
+                reserve,
+                definition,
+                amount,
+                ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID,
+            ));
+        }
+    }
+    state.funded = true;
+    // A resumed launch keeps its original deadline. Funding after expiry produces a
+    // closed pool whose reserves can immediately be recovered through withdrawal.
+    if state
+        .pool
+        .close_timestamp
+        .is_some_and(|deadline| now >= deadline)
+    {
+        state.pool.lifecycle = pool::PoolLifecycle::Closed;
+    }
+    let mut posts: Vec<_> = pre
+        .into_iter()
+        .map(|p| AccountPostState::new(p.account))
+        .collect();
+    posts[0].account_mut().data = Data::from(&state);
+    (posts, calls)
+}
+
+/// Snapshot after the ATA guest's idempotent Create, including its nested PDA authorization.
+pub fn after_ata_creation(
+    ata: &AccountWithMetadata,
+    definition: &AccountWithMetadata,
+) -> AccountWithMetadata {
+    if ata.account != Account::default() {
+        return ata.clone();
+    }
+    let token =
+        TokenDefinition::try_from(&definition.account.data).expect("valid token definition");
+    AccountWithMetadata {
+        account: Account {
+            program_owner: definition.account.program_owner,
+            data: Data::from(&TokenHolding::zeroized_from_definition(
+                definition.account_id,
+                &token,
+            )),
+            ..Account::default()
+        },
+        is_authorized: true,
+        ..ata.clone()
+    }
 }

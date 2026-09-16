@@ -36,6 +36,7 @@ pub mod curve {
         #[account(init)] pool_token1_ata: AccountWithMetadata,
         clock: AccountWithMetadata,
         config: AccountWithMetadata,
+        defer_funding: bool,
         namespace: AccountId,
         token0_amount: u128,
         token1_amount: u128,
@@ -88,15 +89,27 @@ pub mod curve {
     ) {}
 
     #[instruction]
+    pub fn activate_pool(
+        #[account(mut)] pool: AccountWithMetadata,
+        #[account(signer)] owner_authority: AccountWithMetadata,
+        token0_definition: AccountWithMetadata,
+        token1_definition: AccountWithMetadata,
+        #[account(mut)] owner_token0_ata: AccountWithMetadata,
+        #[account(mut)] owner_token1_ata: AccountWithMetadata,
+        #[account(mut)] pool_token0_ata: AccountWithMetadata,
+        #[account(mut)] pool_token1_ata: AccountWithMetadata,
+        clock: AccountWithMetadata,
+        config: AccountWithMetadata,
+    ) {}
+
+    #[instruction]
     pub fn withdraw_reserves(
         #[account(mut)] pool: AccountWithMetadata,
         #[account(signer)] owner: AccountWithMetadata,
-        token0_definition: AccountWithMetadata,
-        token1_definition: AccountWithMetadata,
-        #[account(mut)] pool_token0_ata: AccountWithMetadata,
-        #[account(mut)] pool_token1_ata: AccountWithMetadata,
         #[account(mut)] owner_token0_ata: AccountWithMetadata,
         #[account(mut)] owner_token1_ata: AccountWithMetadata,
+        #[account(mut)] pool_token0_ata: AccountWithMetadata,
+        #[account(mut)] pool_token1_ata: AccountWithMetadata,
         clock: AccountWithMetadata,
     ) {}
 }

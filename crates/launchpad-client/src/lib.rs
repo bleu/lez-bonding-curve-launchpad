@@ -9,6 +9,11 @@
 //! `src/bin/run_deploy_probe.rs` already needed, moved out of the root package so this
 //! crate has a working consumer from the day it was created.
 
+pub use factory_core::CreationStage;
+
+mod lifecycle;
+pub use lifecycle::{FactorySession, LifecycleReceipt, next_creation_invocation};
+
 use std::{collections::HashMap, path::Path};
 
 use anyhow::{Context, Result, anyhow};
@@ -256,6 +261,7 @@ pub fn quote_buy(
     amount_out: u128,
     now: u64,
 ) -> Result<pool::SwapOutcome> {
+    anyhow::ensure!(pool_account.funded, "pool funding is pending");
     let mut pool = pool_account.pool.clone();
     pool.swap_exact_output(
         pool::TokenSide::Token1,
@@ -276,6 +282,7 @@ pub fn quote_sell(
     amount_in: u128,
     now: u64,
 ) -> Result<pool::SwapOutcome> {
+    anyhow::ensure!(pool_account.funded, "pool funding is pending");
     let mut pool = pool_account.pool.clone();
     pool.swap_exact_input(
         pool::TokenSide::Token0,
@@ -295,6 +302,7 @@ pub fn quote_buy_with_collateral(
     collateral_in: u128,
     now: u64,
 ) -> Result<pool::SwapOutcome> {
+    anyhow::ensure!(pool_account.funded, "pool funding is pending");
     let mut pool = pool_account.pool.clone();
     pool.swap_exact_input(
         pool::TokenSide::Token1,
@@ -685,13 +693,15 @@ pub async fn submit_public_invocation<I: Serialize>(
     )
     .context("serializing launchpad instruction")?;
     let witnesses = WitnessSet::for_message(&message, &signing_keys);
-    wallet
+    let hash = wallet
         .sequencer_client
         .send_transaction(LeeTransaction::Public(PublicTransaction::new(
             message, witnesses,
         )))
         .await
-        .context("submitting public launchpad transaction")
+        .context("submitting public launchpad transaction")?;
+    wait_for_confirmation(wallet, hash).await?;
+    Ok(hash)
 }
 
 fn factory_pool_addresses(
@@ -774,8 +784,33 @@ pub fn build_transfer_authority_invocation(
     }
 }
 
+/// Selects the guest's metadata convention for the pinned privacy execution runtime.
+pub trait PrivateInstruction: Serialize {
+    fn for_private_execution(&self) -> Self;
+}
+impl PrivateInstruction for CurveInstruction {
+    fn for_private_execution(&self) -> Self {
+        match self {
+            Self::Private { .. } => self.clone(),
+            _ => Self::Private {
+                instruction: Box::new(self.clone()),
+            },
+        }
+    }
+}
+impl PrivateInstruction for FactoryInstruction {
+    fn for_private_execution(&self) -> Self {
+        match self {
+            Self::Private { .. } => self.clone(),
+            _ => Self::Private {
+                instruction: Box::new(self.clone()),
+            },
+        }
+    }
+}
+
 /// Encodes an app action with exactly one NFT-holder signer for the private router.
-pub fn build_private_authority_instruction<I: Serialize>(
+pub fn build_private_authority_instruction<I: PrivateInstruction>(
     action: &PublicInvocation<I>,
     holder: AccountId,
 ) -> Result<private_flow_core::PrivateAuthorityInstruction> {
@@ -799,14 +834,16 @@ pub fn build_private_authority_instruction<I: Serialize>(
     );
     Ok(private_flow_core::PrivateAuthorityInstruction {
         program_id: action.program_id,
-        instruction_data: Program::serialize_instruction(&action.instruction)?,
+        instruction_data: Program::serialize_instruction(
+            action.instruction.for_private_execution(),
+        )?,
         authority_index,
     })
 }
 
 /// Executes an app role operation with a fresh public NFT holder, returning the NFT to source.
 /// `build` constructs the action and its payout ATAs for that fresh holder.
-pub async fn submit_private_authority<I: Serialize>(
+pub async fn submit_private_authority<I: PrivateInstruction>(
     wallet: &mut WalletCore,
     router: &Program,
     action_program: &Program,
@@ -847,7 +884,7 @@ pub async fn submit_private_authority<I: Serialize>(
     for program in [action_program.clone(), programs::token(), programs::ata()] {
         dependencies.insert(program.id(), program);
     }
-    let (transaction_hash, _) = wallet
+    let (transaction_hash, secrets) = wallet
         .send_privacy_preserving_tx(
             identities,
             Program::serialize_instruction(instruction)?,
@@ -855,6 +892,7 @@ pub async fn submit_private_authority<I: Serialize>(
         )
         .await
         .context("submitting atomic private authority action")?;
+    confirm_private_accounts(wallet, transaction_hash, &[source], &secrets).await?;
     Ok(PrivateBuyReceipt {
         transaction_hash,
         transient_public_account: holder,
@@ -911,7 +949,7 @@ pub async fn transfer_authority(
     };
     if source.starts_with("Private/") || destination.starts_with("Private/") {
         let accounts = vec![identity(source, from)?, identity(destination, to)?];
-        let (hash, _) = wallet
+        let (hash, secrets) = wallet
             .send_privacy_preserving_tx(
                 accounts,
                 Program::serialize_instruction(token_core::Instruction::Transfer {
@@ -920,6 +958,12 @@ pub async fn transfer_authority(
                 &programs::token().into(),
             )
             .await?;
+        let private_ids: Vec<_> = [(source, from), (destination, to)]
+            .into_iter()
+            .filter(|(name, _)| name.starts_with("Private/"))
+            .map(|(_, id)| id)
+            .collect();
+        confirm_private_accounts(wallet, hash, &private_ids, &secrets).await?;
         Ok(hash)
     } else {
         submit_public_invocation(
@@ -929,6 +973,53 @@ pub async fn transfer_authority(
         )
         .await
     }
+}
+
+/// A stage is complete only after inclusion, not after mempool submission.
+async fn wait_for_confirmation(wallet: &WalletCore, hash: HashType) -> Result<LeeTransaction> {
+    tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        wallet.poll_native_token_transfer(hash),
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "confirmation timed out for transaction {}; synchronize the wallet and resume the same launch",
+            hex::encode(hash)
+        )
+    })?
+    .context("waiting for transaction inclusion")
+}
+
+async fn confirm_private_accounts(
+    wallet: &mut WalletCore,
+    hash: HashType,
+    ids: &[AccountId],
+    secrets: &[lee_core::SharedSecretKey],
+) -> Result<()> {
+    let LeeTransaction::PrivacyPreserving(tx) = wait_for_confirmation(wallet, hash).await? else {
+        return Err(anyhow!("expected a private transaction"));
+    };
+    anyhow::ensure!(
+        ids.len() == secrets.len() && ids.len() == tx.message.encrypted_private_post_states.len(),
+        "private result count mismatch"
+    );
+    for (index, (id, secret)) in ids.iter().zip(secrets).enumerate() {
+        let (kind, account) = lee_core::EncryptionScheme::decrypt(
+            &tx.message.encrypted_private_post_states[index].ciphertext,
+            secret,
+            &tx.message.new_commitments[index],
+            u32::try_from(index)?,
+        )
+        .context("decrypting confirmed private account")?;
+        wallet
+            .storage_mut()
+            .key_chain_mut()
+            .insert_private_account(*id, kind, account)?;
+    }
+    wallet
+        .store_persistent_data()
+        .context("persisting confirmed private authority state")
 }
 
 #[cfg(test)]
@@ -968,7 +1059,12 @@ mod tests {
         assert_eq!(routed.authority_index, 1);
         let decoded: curve_core::Instruction =
             risc0_zkvm::serde::from_slice(&routed.instruction_data).unwrap();
-        assert_eq!(decoded, action.instruction);
+        assert_eq!(
+            decoded,
+            curve_core::Instruction::Private {
+                instruction: Box::new(action.instruction.clone())
+            }
+        );
         assert!(
             super::build_private_authority_instruction(&action, AccountId::new([64; 32])).is_err()
         );
@@ -1380,6 +1476,7 @@ mod tests {
         let token_definition = AccountId::new([2; 32]);
         let collateral_definition = AccountId::new([5; 32]);
         let pool = curve_core::PoolAccount {
+            funded: true,
             namespace: AccountId::new([0xAD; 32]),
             token0_definition_id: token_definition,
             token1_definition_id: collateral_definition,

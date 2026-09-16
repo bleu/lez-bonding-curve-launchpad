@@ -162,6 +162,10 @@
       ],
       "args": [
         {
+          "name": "defer_funding",
+          "type": "bool"
+        },
+        {
           "name": "namespace",
           "type": "account_id"
         },
@@ -382,7 +386,7 @@
       "args": []
     },
     {
-      "name": "withdraw_reserves",
+      "name": "activate_pool",
       "accounts": [
         {
           "name": "pool",
@@ -391,7 +395,7 @@
           "init": false
         },
         {
-          "name": "owner",
+          "name": "owner_authority",
           "writable": false,
           "signer": true,
           "init": false
@@ -409,6 +413,18 @@
           "init": false
         },
         {
+          "name": "owner_token0_ata",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "owner_token1_ata",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
           "name": "pool_token0_ata",
           "writable": true,
           "signer": false,
@@ -421,6 +437,36 @@
           "init": false
         },
         {
+          "name": "clock",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "config",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "withdraw_reserves",
+      "accounts": [
+        {
+          "name": "pool",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "owner",
+          "writable": false,
+          "signer": true,
+          "init": false
+        },
+        {
           "name": "owner_token0_ata",
           "writable": true,
           "signer": false,
@@ -428,6 +474,18 @@
         },
         {
           "name": "owner_token1_ata",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "pool_token0_ata",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "pool_token1_ata",
           "writable": true,
           "signer": false,
           "init": false

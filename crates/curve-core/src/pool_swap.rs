@@ -130,6 +130,7 @@ pub fn validated_config(
 fn validated_pool(pool: &AccountWithMetadata, curve_program_id: ProgramId) -> PoolAccount {
     let pool_account =
         PoolAccount::try_from(&pool.account.data).expect("Pool account holds invalid data");
+    assert!(pool_account.funded, "Pool funding is pending");
     assert_eq!(
         pool.account_id,
         compute_pool_pda(

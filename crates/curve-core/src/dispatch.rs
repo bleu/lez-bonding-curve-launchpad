@@ -21,7 +21,13 @@ pub fn process_instruction(
     instruction: Instruction,
     self_program_id: ProgramId,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
-    match instruction {
+    let (private, instruction) = match instruction {
+        Instruction::Private { instruction } => (true, *instruction),
+        instruction => (false, instruction),
+    };
+    let original = pre_states.clone();
+    let (posts, mut calls) = match instruction {
+        Instruction::Private { .. } => panic!("nested execution mode wrapper"),
         Instruction::UpdateConfig {
             namespace,
             admin,
@@ -54,6 +60,7 @@ pub fn process_instruction(
             )
         }
         Instruction::CreatePool {
+            defer_funding,
             namespace,
             token0_amount,
             token1_amount,
@@ -104,11 +111,13 @@ pub fn process_instruction(
                 owner,
                 curve_program_id,
                 owner_program,
+                defer_funding,
             );
             posts.push(AccountPostState::new(clock.account));
             posts.push(AccountPostState::new(config.account));
             (posts, calls)
         }
+        Instruction::ActivatePool => crate::pool_create::activate_pool(pre_states, self_program_id),
         Instruction::SwapExactInput {
             amount_in,
             min_amount_out,
@@ -206,7 +215,11 @@ pub fn process_instruction(
                 self_program_id,
             )
         }
+    };
+    if !private {
+        use_public_authorizations(&original, &mut calls, self_program_id);
     }
+    (posts, calls)
 }
 
 #[expect(
@@ -223,11 +236,20 @@ fn settle_withdrawal(
     clock: AccountWithMetadata,
     curve_program_id: ProgramId,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+    let mut complete_posts = vec![
+        AccountPostState::new(pool.account.clone()),
+        AccountPostState::new(owner.account.clone()),
+        AccountPostState::new(owner_token0_ata.account.clone()),
+        AccountPostState::new(owner_token1_ata.account.clone()),
+        AccountPostState::new(pool_token0_ata.account.clone()),
+        AccountPostState::new(pool_token1_ata.account.clone()),
+        AccountPostState::new(clock.account.clone()),
+    ];
     let pool_state =
         PoolAccount::try_from(&pool.account.data).expect("Pool account holds valid data");
     let (posts, reserves) = withdraw_reserves(pool.clone(), owner.clone(), clock, curve_program_id);
     let authority = AccountWithMetadata {
-        account: pool.account.clone(),
+        account: posts[0].account().clone(),
         is_authorized: false,
         account_id: pool.account_id,
     };
@@ -286,7 +308,8 @@ fn settle_withdrawal(
             .with_pda_seeds(seeds),
         );
     }
-    (posts, calls)
+    complete_posts[0] = posts[0].clone();
+    (complete_posts, calls)
 }
 
 #[expect(
@@ -308,6 +331,17 @@ fn settle_exact_input(
     token_in: lee_core::account::AccountId,
     curve_program_id: ProgramId,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+    let mut complete_posts = vec![
+        AccountPostState::new(pool.account.clone()),
+        AccountPostState::new(config.account.clone()),
+        AccountPostState::new(participant.account.clone()),
+        AccountPostState::new(participant_token_in_ata.account.clone()),
+        AccountPostState::new(pool_token_in_ata.account.clone()),
+        AccountPostState::new(pool_token_out_ata.account.clone()),
+        AccountPostState::new(participant_token_out_ata.account.clone()),
+        AccountPostState::new(treasury_token_in_ata.account.clone()),
+        AccountPostState::new(clock.account.clone()),
+    ];
     assert!(
         participant.is_authorized,
         "Participant authorization is missing"
@@ -325,7 +359,7 @@ fn settle_exact_input(
     );
 
     let pool_authority = AccountWithMetadata {
-        account: pool.account.clone(),
+        account: posts[0].account().clone(),
         is_authorized: false,
         account_id: pool.account_id,
     };
@@ -378,7 +412,7 @@ fn settle_exact_input(
     if settlement.protocol_fee != 0 && !settlement.protocol_fee_on_output {
         calls.push(ata_transfer(
             participant,
-            participant_token_in_ata,
+            debited(participant_token_in_ata, settlement.effective_amount_in),
             treasury_token_in_ata.clone(),
             settlement.protocol_fee,
         ));
@@ -403,7 +437,7 @@ fn settle_exact_input(
         calls.push(
             ata_transfer(
                 pool_signer,
-                pool_token_out_ata,
+                debited(pool_token_out_ata, settlement.amount_out),
                 treasury_token_in_ata,
                 settlement.protocol_fee,
             )
@@ -415,7 +449,8 @@ fn settle_exact_input(
             )]),
         );
     }
-    (posts, calls)
+    complete_posts[0] = posts[0].clone();
+    (complete_posts, calls)
 }
 
 #[expect(
@@ -437,6 +472,17 @@ fn settle_exact_output(
     token_in: lee_core::account::AccountId,
     curve_program_id: ProgramId,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+    let mut complete_posts = vec![
+        AccountPostState::new(pool.account.clone()),
+        AccountPostState::new(config.account.clone()),
+        AccountPostState::new(participant.account.clone()),
+        AccountPostState::new(participant_token_in_ata.account.clone()),
+        AccountPostState::new(pool_token_in_ata.account.clone()),
+        AccountPostState::new(pool_token_out_ata.account.clone()),
+        AccountPostState::new(participant_token_out_ata.account.clone()),
+        AccountPostState::new(treasury_token_in_ata.account.clone()),
+        AccountPostState::new(clock.account.clone()),
+    ];
     assert!(
         participant.is_authorized,
         "Participant authorization is missing"
@@ -453,7 +499,7 @@ fn settle_exact_output(
         curve_program_id,
     );
     let pool_authority = AccountWithMetadata {
-        account: pool.account.clone(),
+        account: posts[0].account().clone(),
         is_authorized: false,
         account_id: pool.account_id,
     };
@@ -505,7 +551,7 @@ fn settle_exact_output(
     if settlement.protocol_fee != 0 && !settlement.protocol_fee_on_output {
         calls.push(ata_transfer(
             participant,
-            participant_token_in_ata,
+            debited(participant_token_in_ata, settlement.effective_amount_in),
             treasury_token_in_ata.clone(),
             settlement.protocol_fee,
         ));
@@ -530,7 +576,7 @@ fn settle_exact_output(
         calls.push(
             ata_transfer(
                 pool_signer,
-                pool_token_out_ata,
+                debited(pool_token_out_ata, settlement.amount_out),
                 treasury_token_in_ata,
                 settlement.protocol_fee,
             )
@@ -542,7 +588,8 @@ fn settle_exact_output(
             )]),
         );
     }
-    (posts, calls)
+    complete_posts[0] = posts[0].clone();
+    (complete_posts, calls)
 }
 
 fn ata_transfer(
@@ -559,4 +606,39 @@ fn ata_transfer(
             amount,
         },
     )
+}
+
+fn debited(mut holding: AccountWithMetadata, amount: u128) -> AccountWithMetadata {
+    let mut token =
+        token_core::TokenHolding::try_from(&holding.account.data).expect("valid token holding");
+    let token_core::TokenHolding::Fungible { balance, .. } = &mut token else {
+        panic!("pool tokens must be fungible")
+    };
+    *balance = balance
+        .checked_sub(amount)
+        .expect("sufficient token balance");
+    holding.account.data = lee_core::account::Data::from(&token);
+    holding.is_authorized = true;
+    holding
+}
+
+/// Public LEZ calls inherit authorization from their caller, not preceding siblings.
+/// State snapshots stay sequential; only the authorization metadata differs from the
+/// pinned privacy circuit's transaction-wide authorization set.
+pub fn use_public_authorizations(
+    pre: &[AccountWithMetadata],
+    calls: &mut [ChainedCall],
+    program: ProgramId,
+) {
+    for call in calls {
+        for account in &mut call.pre_states {
+            account.is_authorized = pre
+                .iter()
+                .any(|p| p.account_id == account.account_id && p.is_authorized)
+                || call.pda_seeds.iter().any(|seed| {
+                    lee_core::account::AccountId::for_public_pda(&program, seed)
+                        == account.account_id
+                });
+        }
+    }
 }

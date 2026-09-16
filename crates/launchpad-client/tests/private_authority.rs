@@ -133,6 +133,7 @@ fn private_nft_closes_direct_and_factory_pools() {
         let owner = if factory_owned { factory_id } else { nft };
         let pool_id = curve_core::compute_pool_pda(namespace, curve.id(), token0, token1, owner);
         let pool_state = curve_core::PoolAccount {
+            funded: true,
             namespace,
             token0_definition_id: token0,
             token1_definition_id: token1,
@@ -175,6 +176,9 @@ fn private_nft_closes_direct_and_factory_pools() {
             AccountWithMetadata::new(Account::default(), true, AccountId::new([82; 32]));
         let (action, accounts, authority_index, program_id) = if factory_owned {
             let state = factory_core::FactoryState {
+                settlement_stage: factory_core::SettlementStage::Unstarted,
+                creation_stage: factory_core::CreationStage::Active,
+                end_timestamp: None,
                 namespace,
                 launch_salt: salt,
                 token_definition_id: token0,

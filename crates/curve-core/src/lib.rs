@@ -30,6 +30,8 @@ mod tests;
 /// Curve program instruction. Token accounts are supplied by the guest/token adapter.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Instruction {
+    /// Select the pinned privacy circuit's transaction-wide PDA authorization rules.
+    Private { instruction: Box<Instruction> },
     /// Creates the config PDA on the first call, replaces it whole after.
     ///
     /// Required accounts:
@@ -56,6 +58,7 @@ pub enum Instruction {
     /// - Pool PDA's token 0 ATA (uninitialized)
     /// - Pool PDA's token 1 ATA (uninitialized)
     CreatePool {
+        defer_funding: bool,
         namespace: AccountId,
         token0_amount: u128,
         token1_amount: u128,
@@ -92,6 +95,8 @@ pub enum Instruction {
         max_amount_in: u128,
         token_in: AccountId,
     },
+    /// Funds a prepared pool; same ten accounts as CreatePool.
+    ActivatePool,
     /// Owner-only logical closure.
     ClosePool,
     /// Owner-only full withdrawal after manual closure or expiry.
@@ -171,6 +176,7 @@ pub fn compute_config_pda_seed(namespace: AccountId) -> PdaSeed {
 /// The pool PDA's contents: ordered token roles, owner, and bounded-AMM state.
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct PoolAccount {
+    pub funded: bool,
     pub namespace: AccountId,
     pub token0_definition_id: AccountId,
     pub token1_definition_id: AccountId,

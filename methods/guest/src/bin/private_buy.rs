@@ -109,10 +109,12 @@ fn main() {
                 treasury_collateral_ata,
                 clock,
             ],
-            &CurveInstruction::SwapExactOutput {
-                amount_out: instruction.amount_out,
-                max_amount_in: instruction.max_collateral_in,
-                token_in: instruction.collateral_definition,
+            &CurveInstruction::Private {
+                instruction: Box::new(CurveInstruction::SwapExactOutput {
+                    amount_out: instruction.amount_out,
+                    max_amount_in: instruction.max_collateral_in,
+                    token_in: instruction.collateral_definition,
+                }),
             },
         ),
         ChainedCall::new(

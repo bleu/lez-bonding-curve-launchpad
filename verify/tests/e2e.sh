@@ -117,7 +117,8 @@ case "$*" in
       printf '%s\n' '{"real_token_reserve":0,"sale_quantity":1000,"tokens_sold":1000,"status":"closed"}'
     fi
     ;;
-  *' configure '*|*' buy '*|*' buy-with-collateral '*|*' sell '*|*' unlock '*|*' withdraw '*)
+  *' withdraw '*) printf '%s\n' '{"status":"complete","transaction_hash":"test"}' ;;
+  *' configure '*|*' buy '*|*' buy-with-collateral '*|*' sell '*|*' unlock '*)
     printf '%s\n' '{"status":"submitted","transaction_hash":"test"}'
     ;;
   *) printf '%s\n' '{"launch_salt":"0000000000000000000000000000000000000000000000000000000000000001"}' ;;
