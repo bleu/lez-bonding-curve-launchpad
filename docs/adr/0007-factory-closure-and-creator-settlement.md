@@ -1,5 +1,7 @@
 # 0007 — Factory closure and creator settlement
 
+Authority amendment: [ADR 0008](0008-permissionless-namespaces.md) replaces the creator account-address witness with a transferable NFT definition identity. Allocation policy below still applies.
+
 Status: accepted
 
 ## Context

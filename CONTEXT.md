@@ -16,12 +16,14 @@ The curve program is a neutral bounded AMM. A token launch is a factory policy l
 - Exact-output swap — receives `amountOut` and spends at most fee-inclusive `maxAmountIn`.
 - `tokenIn` — the input token definition ID. Token0 input yields token1; token1 input yields token0.
 - Protocol fee — charged in token1 (collateral for factory launches), deducted from buy input or raw sell output and routed to the namespace treasury. No fee stays in the pool.
-- Owner — the public account allowed to close and withdraw. A factory-created pool stores a factory-owned PDA; a direct pool stores its caller-selected owner.
+- Authority NFT — a unique transferable NFT master granting a role. Its token definition is the stable role identity; its current holding account proves control.
+- Owner — the authority allowed to close and withdraw. A direct pool uses an authority NFT; a factory-created pool remains under factory program custody.
 - Close timestamp — optional trusted LEZ chain time at which swaps stop. Expiry is logical closure and needs no separate close transaction.
 - Manual close — the owner ending swaps before withdrawal.
 - Withdrawal — owner-only transfer of both complete remaining real reserves after manual close or expiry. It permanently retires the pool.
 - Treasury — the configured owner of protocol-fee ATAs.
-- Admin authority — the current key allowed to update its namespace fee and treasury, transfer authority, or renounce it permanently.
+- Admin authority — the NFT granting permission to update a namespace fee and treasury, replace its authority, or renounce it permanently. Transferring the NFT transfers control.
+- Creator authority — the NFT granting close, allocation-claim, and proceeds-withdrawal rights for a factory launch. Rights follow its current holder.
 - Config — the settings of one namespace, shared by its pools and read live at execution.
 - ATA — an associated token account derived from an owner and token definition. Pool reserves are ATAs owned by the pool PDA.
 - Factory — the launch adapter. It mints a fixed supply, owns launch vocabulary and allocation policy, retains any DEX-seed allocation, and deposits only tradeable amounts into the pool.

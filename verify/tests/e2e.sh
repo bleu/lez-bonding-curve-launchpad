@@ -93,6 +93,7 @@ cat >"$tmp_dir/bin/cargo" <<'EOF'
 set -euo pipefail
 printf '%s\n' "$*" >>"$E2E_COMMAND_LOG"
 case "$*" in
+  *' create-authority '*) printf '%s\n' '{"status":"submitted","authority":"nft-definition","holder":"nft-holder","transaction_hash":"test"}' ;;
   *' --max-collateral 0'*)
     printf '%s\n' '{"status":"error","error":{"category":"slippage_floor"}}'
     exit 1
@@ -129,7 +130,7 @@ printf '0\n' >"$tmp_dir/status-count"
 
 if ! E2E_COMMAND_LOG="$log_file" E2E_RESET_COMPLETE="$tmp_dir/reset" \
   E2E_ACCOUNT_COUNT="$tmp_dir/account-count" E2E_STATUS_COUNT="$tmp_dir/status-count" \
-  NAMESPACE_ADMIN_ACCOUNT=admin PATH="$tmp_dir/bin:$PATH" \
+  PATH="$tmp_dir/bin:$PATH" \
   "$e2e_script" >"$tmp_dir/stdout" 2>"$tmp_dir/stderr"; then
   cat "$tmp_dir/stderr" >&2
   fail "the managed localnet walkthrough should complete with the mocked live chain"
@@ -139,24 +140,25 @@ rg -qx 'localnet reset --yes --reset-wallet' "$log_file" \
   || fail "the walkthrough must reset its project-local wallet with the localnet"
 rg -qx 'localnet stop' "$log_file" \
   || fail "the walkthrough must stop the managed localnet on exit"
-rg -q -- '--json --namespace admin create-sale' "$log_file" \
+rg -q -- '--json --namespace nft-definition create-sale' "$log_file" \
   || fail "the walkthrough must create the fixture through launchpad JSON output"
-rg -q -- '--creator Public/admin' "$log_file" \
+rg -q -- '--creator Public/nft-holder' "$log_file" \
   || fail "the walkthrough must pass the creator account to create-sale"
 rg -q -- '--factory-program-path methods/target/factory.bin' "$log_file" \
   || fail "the walkthrough must pass the discovered factory binary to create-sale"
 rg -q -- '--curve-program-path methods/target/curve.bin' "$log_file" \
   || fail "the walkthrough must pass the discovered curve binary to create-sale"
-rg -q -- '--json --namespace admin buy-with-collateral' "$log_file" \
+rg -q -- '--json --namespace nft-definition buy-with-collateral' "$log_file" \
   || fail "the walkthrough must exercise the collateral-input purchase path"
 
-printf 'ok: managed localnet is reset and stopped\n'
+rg -q -- 'create-authority --name' "$log_file" \
+  || fail "the walkthrough must issue its NFT authority after wallet reset"
+printf 'ok: managed localnet creates fresh NFT authority after reset and stops\n'
 
 : >"$log_file"
 rm -f "$tmp_dir/reset"
 
 if E2E_COMMAND_LOG="$log_file" E2E_RESET_COMPLETE="$tmp_dir/reset" E2E_CURVE_DEPLOY_FAILURE=1 \
-  NAMESPACE_ADMIN_ACCOUNT=admin \
   PATH="$tmp_dir/bin:$PATH" "$e2e_script" >"$tmp_dir/stdout" 2>"$tmp_dir/stderr"; then
   fail "a failed curve deployment must make the walkthrough fail"
 fi

@@ -27,7 +27,7 @@ cargo install --git https://github.com/logos-co/scaffold --tag v0.3.0 --locked -
 Before a walkthrough, create or identify a public wallet account with `lgs wallet -- account new public`. That account authorizes namespace creation; no key is compiled into the program. Run:
 
 ```bash
-NAMESPACE_ADMIN_ACCOUNT=Public/<namespace-creator-account> ./verify/e2e.sh
+./verify/e2e.sh
 ```
 
 The script resets only this project's managed localnet and wallet, builds and deploys both guests, configures the curve, creates a launch, exercises rejected and successful buys plus a sell, exhausts the sale reserve, then checks auto-close, creator unlock, and withdrawal. It stops the localnet it started and refuses to touch a foreign listener. It is a manual integration harness, not evidence used by this PoC review.
@@ -132,10 +132,15 @@ implementation and limits are recorded in [ADR 0005](docs/adr/0005-private-trade
 
 ## SPEL IDL
 
-The hand-written guests retain their shared Rust instruction enums. Their SPEL
+The fixed-account hand-written guests retain their shared Rust instruction enums. Their SPEL
 interface declarations live in [`idl-src`](idl-src), and generated JSON is checked
 into [`idl`](idl). Regenerate it with `./verify/generate-idl.sh`; CI/review can
-verify it has not drifted with `./verify/check-idl.sh`.
+verify it has not drifted with `./verify/check-idl.sh`. The generic private-authority
+router uses a variable action account list: the first account is the private NFT
+source, followed by the selected action's accounts. Its wire definition is
+[`PrivateAuthorityInstruction`](crates/private-flow-core/src/lib.rs), where
+`authority_index` indexes the action accounts and `instruction_data` contains the
+RISC0-serialized action. It is not represented by a fixed-account SPEL declaration.
 
 ## Layout
 
@@ -154,27 +159,53 @@ Handlers live in the host workspace under `crates/`, and each risc0 guest in `me
 
 ## Namespace administration
 
-This PoC targets the namespace requirements proposed in [Logos PR #204](https://github.com/logos-co/rfp/pull/204). One deployment hosts independent configurations. The namespace identity is the public key that signs its first `configure` call. An operator can create further identities and assign the same admin to them. The identity stays fixed after admin transfer or renunciation; it is not a deployment-wide authority.
-
-Every command requires `--namespace Public/<identity>`. The SDK takes the namespace explicitly, including the private-buy builder. Sale salts are local to a namespace. Namespace selection scopes factory, token, escrow, pool, and reserve addresses. The curve resolves swap fees and treasury from the pool's stored namespace and rejects mismatched configurations or reserve accounts.
+One deployment hosts independent namespace configurations. Namespace identity is
+an authority NFT's definition ID. Admin, sale-creator, and direct pool-owner roles
+all check the same token-owned NFT master. Transferring that NFT changes its
+controller without changing namespace or pool addresses.
 
 ```bash
-# Create a namespace. Its identity must authorize this first call.
-launchpad --namespace Public/<identity> configure \
-  --curve-program-path <curve.bin> --admin Public/<identity> \
+# Returns the stable authority definition and its initial public holding account.
+launchpad --json create-authority --name "Launchpad authority" --uri ""
+
+launchpad --namespace Public/<authority-definition> configure \
+  --curve-program-path <curve.bin> --admin Public/<nft-holder> \
   --protocol-fee-bps 100 --treasury Public/<treasury>
 
-# Change settings or transfer administration using the current admin.
-launchpad --namespace Public/<identity> configure \
-  --curve-program-path <curve.bin> --admin Public/<current-admin> \
-  --new-admin Public/<next-admin> --protocol-fee-bps 50 --treasury Public/<treasury>
+# Move the NFT into an owned private account; keep that account's keys.
+launchpad transfer-authority --from Public/<nft-holder> --to Private/<private-holder>
 
-launchpad --namespace Public/<identity> namespace-info --curve-program-path <curve.bin>
-launchpad --namespace Public/<identity> renounce-admin \
-  --curve-program-path <curve.bin> --admin Public/<current-admin>
+# Deshield, update settings, and reshield the same NFT atomically.
+launchpad --namespace Public/<authority-definition> \
+  --authority-router-path <private_authority.bin> configure \
+  --curve-program-path <curve.bin> --admin Private/<private-holder> \
+  --protocol-fee-bps 50 --treasury Public/<treasury>
 ```
 
-`configure` replaces the fee, treasury, and admin together; omit `--new-admin` to retain the signing admin. Transfer is single-step. Renunciation is permanent: it disables updates and transfers while retaining the last fee and treasury for trading. The RFP-001 library remains a future integration; this PoC implements its admin behavior locally.
+Create and transfer authority commands do not require a namespace. Other commands
+require `--namespace Public/<authority-definition>`. Creator arguments likewise
+refer to NFT holding accounts. Ordinary trade funding accounts still authorize
+their own spending.
+
+Omit `configure --new-admin` to keep the same authority NFT. To replace the NFT,
+pass its holding account as `--new-admin`; the CLI resolves its definition ID.
+Transferring the existing NFT needs no configuration change. `renounce-admin`
+permanently disables administration while retaining the last fee and treasury.
+
+A fresh public holder does not hide which authority NFT was used. Creator payouts
+remain in public token accounts; shielding authority does not shield the proceeds.
+See [ADR 0008](docs/adr/0008-permissionless-namespaces.md) for the custody and privacy
+boundaries.
+
+The private authority guest is execution-tested for configuration and for closing
+direct and factory pools. Larger sale creation and settlement graphs still need
+staging to fit LEZ's ten-call limit and corrected intermediate account states;
+this change does not claim those private flows work end to end. Run the guest
+checks after building `methods/`:
+
+```bash
+RISC0_DEV_MODE=1 cargo test -p launchpad-client --test private_authority -- --ignored
+```
 
 Zero fees are accepted. The 10,000-basis-point denominator is an arithmetic boundary, not a commercial tier or policy cap; a buy whose fee consumes its input is rejected. Swaps read the current namespace configuration at execution, and enforce the trader's net-output floor or gross-input cap. `price --sell --tokens <amount>` shows raw collateral, fee, and net proceeds; price/status output includes the namespace, fee rate, and treasury.
 
@@ -182,9 +213,9 @@ This changes the wire interfaces and account derivation. Rebuild and redeploy th
 
 ## Ownership and privacy boundary
 
-Pool ownership is deliberately public. `create_pool` stores its authorized owner in pool state and scopes the pool PDA by namespace, ordered token pair, and owner. Direct creators may own pools themselves; the factory path supplies a factory-owned PDA so close and withdrawal must pass through factory policy. Creation verifies the owner's source ATAs, creates both pool-owned reserve ATAs, and atomically transfers both initial real reserves.
+Pool ownership is deliberately public. `create_pool` stores its owner NFT definition (or internal program PDA) in pool state and scopes the pool PDA by namespace, ordered token pair, and owner. Direct creators may own pools themselves; the factory path supplies a factory-owned PDA so close and withdrawal must pass through factory policy. Creation verifies the owner's source ATAs, creates both pool-owned reserve ATAs, and atomically transfers both initial real reserves.
 
-Creator identity and privacy are launch policy, not AMM state. The future factory may commit to a private creator authority while exposing only its own owner PDA to the neutral pool.
+Creator identity and privacy are launch policy. The factory commits to the creator NFT definition while exposing its own program PDA as the neutral pool owner.
 
 `lgs doctor` reports three "differs from scaffold default" warnings and one about spel not vendoring LEZ v0.1.2. Those are expected: doctor compares against scaffold's default pin rather than the configured one. See `docs/adr/0001`.
 
