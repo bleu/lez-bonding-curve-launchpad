@@ -50,7 +50,8 @@ pub fn update_config(
         "Namespace administration is renounced"
     );
     assert_eq!(
-        authority.account_id, expected_admin,
+        crate::authority::identity(&authority),
+        expected_admin,
         "Authority is not the config admin"
     );
 
@@ -113,7 +114,8 @@ pub fn renounce_admin(
         "Authority authorization is missing"
     );
     assert_eq!(
-        authority.account_id, data.admin,
+        crate::authority::identity(&authority),
+        data.admin,
         "Authority is not the config admin"
     );
     data.admin = AccountId::default();

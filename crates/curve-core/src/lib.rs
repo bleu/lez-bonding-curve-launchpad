@@ -17,6 +17,7 @@ use lee_core::{
 use pool::Pool;
 use serde::{Deserialize, Serialize};
 
+pub mod authority;
 pub mod dispatch;
 pub mod pool_create;
 pub mod pool_lifecycle;
@@ -63,6 +64,7 @@ pub enum Instruction {
         close_timestamp: Option<u64>,
         close_on_depletion: Option<DepletionSide>,
         owner: AccountId,
+        owner_program: Option<(ProgramId, [u8; 32])>,
         /// Included in the wire instruction following the LEZ program convention;
         /// dispatch verifies it against the executing program id.
         curve_program_id: ProgramId,
@@ -173,6 +175,7 @@ pub struct PoolAccount {
     pub token0_definition_id: AccountId,
     pub token1_definition_id: AccountId,
     pub owner: AccountId,
+    pub owner_program: Option<(ProgramId, [u8; 32])>,
     pub pool: Pool,
 }
 

@@ -44,6 +44,7 @@ pub mod curve {
         close_timestamp: Option<u64>,
         close_on_depletion: Option<DepletionSide>,
         owner: AccountId,
+        owner_program: Option<(ProgramId, [u8; 32])>,
         curve_program_id: ProgramId,
     ) {}
 

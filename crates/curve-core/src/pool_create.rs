@@ -36,11 +36,13 @@ pub fn create_pool(
     close_on_depletion: Option<TokenSide>,
     expected_owner: AccountId,
     curve_program_id: ProgramId,
+    owner_program: Option<(ProgramId, [u8; 32])>,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     let ata_program_id = ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID;
     assert!(owner.is_authorized, "Owner authorization is missing");
     assert_eq!(
-        owner.account_id, expected_owner,
+        crate::authority::pool_owner(&owner, owner_program),
+        expected_owner,
         "Authorized account is not the selected pool owner"
     );
     assert_ne!(
@@ -118,6 +120,7 @@ pub fn create_pool(
         token0_definition_id: token0_definition.account_id,
         token1_definition_id: token1_definition.account_id,
         owner: expected_owner,
+        owner_program,
         pool,
     });
 

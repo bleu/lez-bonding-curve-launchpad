@@ -24,7 +24,8 @@ pub fn close_pool(
     let mut pool_account =
         PoolAccount::try_from(&pool.account.data).expect("Pool account holds invalid data");
     assert_eq!(
-        owner.account_id, pool_account.owner,
+        crate::authority::pool_owner(&owner, pool_account.owner_program),
+        pool_account.owner,
         "Authority is not the pool owner"
     );
     assert_eq!(
@@ -39,14 +40,18 @@ pub fn close_pool(
         "Pool account ID does not match PDA"
     );
 
-    let now = trusted_time(clock);
+    let now = trusted_time(clock.clone());
     pool_account
         .pool
         .close_pool(now)
         .expect("Pool is already closed");
     let mut post = pool.account;
     post.data = (&pool_account).into();
-    vec![AccountPostState::new(post)]
+    vec![
+        AccountPostState::new(post),
+        AccountPostState::new(owner.account),
+        AccountPostState::new(clock.account),
+    ]
 }
 
 fn trusted_time(clock: AccountWithMetadata) -> u64 {
@@ -71,7 +76,8 @@ pub fn withdraw_reserves(
     let mut pool_account =
         PoolAccount::try_from(&pool.account.data).expect("Pool account holds invalid data");
     assert_eq!(
-        owner.account_id, pool_account.owner,
+        crate::authority::pool_owner(&owner, pool_account.owner_program),
+        pool_account.owner,
         "Authority is not the pool owner"
     );
     assert_eq!(
@@ -86,7 +92,7 @@ pub fn withdraw_reserves(
         "Pool account ID does not match PDA"
     );
 
-    let now = trusted_time(clock);
+    let now = trusted_time(clock.clone());
     let (token0_amount, token1_amount) = pool_account
         .pool
         .withdraw_reserves(now)
@@ -94,7 +100,11 @@ pub fn withdraw_reserves(
     let mut post = pool.account;
     post.data = (&pool_account).into();
     (
-        vec![AccountPostState::new(post)],
+        vec![
+            AccountPostState::new(post),
+            AccountPostState::new(owner.account),
+            AccountPostState::new(clock.account),
+        ],
         WithdrawnReserves {
             token0_amount,
             token1_amount,

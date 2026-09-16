@@ -200,6 +200,12 @@
           "type": "account_id"
         },
         {
+          "name": "owner_program",
+          "type": {
+            "option": "unknown"
+          }
+        },
+        {
           "name": "curve_program_id",
           "type": "program_id"
         }

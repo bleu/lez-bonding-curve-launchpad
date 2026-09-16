@@ -19,6 +19,10 @@ programs.workspace = true
 sequencer_service_rpc.workspace = true
 serde.workspace = true
 wallet.workspace = true
+token_core.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+risc0-zkvm.workspace = true

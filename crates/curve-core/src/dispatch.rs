@@ -62,6 +62,7 @@ pub fn process_instruction(
             close_timestamp,
             close_on_depletion,
             owner,
+            owner_program,
             curve_program_id,
         } => {
             assert_eq!(
@@ -102,6 +103,7 @@ pub fn process_instruction(
                 close_on_depletion.map(Into::into),
                 owner,
                 curve_program_id,
+                owner_program,
             );
             posts.push(AccountPostState::new(clock.account));
             posts.push(AccountPostState::new(config.account));

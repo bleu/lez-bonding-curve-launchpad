@@ -37,7 +37,14 @@ fn uninitialized_config() -> AccountWithMetadata {
 
 fn signer(account_id: AccountId) -> AccountWithMetadata {
     AccountWithMetadata {
-        account: Account::default(),
+        account: Account {
+            program_owner: crate::authority::TOKEN_PROGRAM_ID,
+            data: Data::from(&TokenHolding::NftMaster {
+                definition_id: account_id,
+                print_balance: 1,
+            }),
+            ..Account::default()
+        },
         is_authorized: true,
         account_id,
     }
@@ -217,6 +224,7 @@ fn create_pool_with_accounts(
         None,
         owner_id,
         CURVE_PROGRAM_ID,
+        None,
     );
 }
 
@@ -304,6 +312,7 @@ fn create_pool_rejects_an_end_timestamp_at_the_trusted_time_boundary() {
         None,
         owner_id,
         CURVE_PROGRAM_ID,
+        None,
     );
 }
 
@@ -333,6 +342,7 @@ fn create_pool_rejects_a_substituted_clock_even_without_an_end_timestamp() {
         None,
         owner_id,
         CURVE_PROGRAM_ID,
+        None,
     );
 }
 
@@ -363,6 +373,7 @@ fn owner_can_open_a_pool_and_atomically_fund_both_ata_reserves() {
         None,
         owner_id,
         CURVE_PROGRAM_ID,
+        None,
     );
 
     let pool_account = PoolAccount::try_from(&post_states[0].account().data)
@@ -448,6 +459,7 @@ fn zero_initial_reserve_creates_its_ata_without_emitting_a_zero_transfer() {
         None,
         owner_id,
         CURVE_PROGRAM_ID,
+        None,
     );
 
     assert_eq!(
@@ -667,10 +679,12 @@ fn first_update_config_initializes_the_config() {
 #[test]
 fn pool_state_round_trips_with_ordered_tokens_owner_and_optional_expiry() {
     let pool_account = PoolAccount {
+        owner_program: None,
         namespace: AccountId::new([0xAD; 32]),
         token0_definition_id: AccountId::new([1; 32]),
         token1_definition_id: AccountId::new([2; 32]),
         owner: AccountId::new([3; 32]),
+
         pool: Pool::create(800, 25, 1000, 100, Some(42), None).expect("valid pool"),
     };
     let data = Data::from(&pool_account);
@@ -686,6 +700,7 @@ fn stored_pool_owner_can_close_the_pool() {
     let token0 = AccountId::new([1; 32]);
     let token1 = AccountId::new([2; 32]);
     let pool_account = PoolAccount {
+        owner_program: None,
         namespace: AccountId::new([0xAD; 32]),
         token0_definition_id: token0,
         token1_definition_id: token1,
@@ -708,7 +723,7 @@ fn stored_pool_owner_can_close_the_pool() {
         ),
     };
 
-    let [post]: [_; 1] = close_pool(pool, signer(owner), trusted_clock(1), CURVE_PROGRAM_ID)
+    let [post, _, _]: [_; 3] = close_pool(pool, signer(owner), trusted_clock(1), CURVE_PROGRAM_ID)
         .try_into()
         .expect("one post state");
     let closed = PoolAccount::try_from(&post.account().data).expect("valid pool state");
@@ -722,6 +737,7 @@ fn an_unrelated_signer_cannot_close_the_pool() {
     let token0 = AccountId::new([1; 32]);
     let token1 = AccountId::new([2; 32]);
     let pool_account = PoolAccount {
+        owner_program: None,
         namespace: AccountId::new([0xAD; 32]),
         token0_definition_id: token0,
         token1_definition_id: token1,
@@ -752,6 +768,7 @@ fn expired_pool_owner_can_withdraw_both_reserves_without_closing_first() {
     let token0 = AccountId::new([1; 32]);
     let token1 = AccountId::new([2; 32]);
     let pool_account = PoolAccount {
+        owner_program: None,
         namespace: AccountId::new([0xAD; 32]),
         token0_definition_id: token0,
         token1_definition_id: token1,
@@ -794,7 +811,7 @@ fn expired_pool_owner_can_withdraw_both_reserves_without_closing_first() {
         (withdrawn.token0_amount, withdrawn.token1_amount),
         (800, 25)
     );
-    let [post]: [_; 1] = posts.try_into().expect("one post state");
+    let [post, _, _]: [_; 3] = posts.try_into().expect("one post state");
     let retired = PoolAccount::try_from(&post.account().data).expect("valid pool state");
     assert_eq!(retired.pool.lifecycle, pool::PoolLifecycle::Withdrawn);
 }
@@ -815,6 +832,7 @@ fn withdraw_dispatch_transfers_both_real_reserves_and_retires_the_pool() {
         account: Account {
             program_owner: CURVE_PROGRAM_ID,
             data: Data::from(&PoolAccount {
+                owner_program: None,
                 namespace: AccountId::new([0xAD; 32]),
                 token0_definition_id: token0,
                 token1_definition_id: token1,
@@ -845,7 +863,7 @@ fn withdraw_dispatch_transfers_both_real_reserves_and_retires_the_pool() {
         CURVE_PROGRAM_ID,
     );
 
-    let [post]: [_; 1] = posts
+    let [post, _, _]: [_; 3] = posts
         .try_into()
         .expect("only the pool state changes directly");
     let retired = PoolAccount::try_from(&post.account().data).expect("valid pool state");
@@ -896,6 +914,7 @@ fn exact_input_sell_charges_the_protocol_fee_in_collateral() {
     let token0 = AccountId::new([1; 32]);
     let token1 = AccountId::new([2; 32]);
     let pool_account = PoolAccount {
+        owner_program: None,
         namespace: AccountId::new([0xAD; 32]),
         token0_definition_id: token0,
         token1_definition_id: token1,
@@ -959,6 +978,7 @@ fn token0_to_token1_exact_input_settles_all_three_transfers() {
         account: Account {
             program_owner: CURVE_PROGRAM_ID,
             data: Data::from(&PoolAccount {
+                owner_program: None,
                 namespace: AccountId::new([0xAD; 32]),
                 token0_definition_id: token0,
                 token1_definition_id: token1,
@@ -1069,6 +1089,7 @@ fn exact_output_handler_caps_fee_inclusive_input_in_the_reverse_direction() {
     let token0 = AccountId::new([1; 32]);
     let token1 = AccountId::new([2; 32]);
     let pool_account = PoolAccount {
+        owner_program: None,
         namespace: AccountId::new([0xAD; 32]),
         token0_definition_id: token0,
         token1_definition_id: token1,
@@ -1135,6 +1156,7 @@ fn exact_output_dispatch_settles_fee_inclusive_input_and_requested_output_atomic
         account: Account {
             program_owner: CURVE_PROGRAM_ID,
             data: Data::from(&PoolAccount {
+                owner_program: None,
                 namespace: AccountId::new([0xAD; 32]),
                 token0_definition_id: token0,
                 token1_definition_id: token1,
@@ -1240,6 +1262,7 @@ fn every_instruction_survives_the_guest_wire_format() {
             treasury: new_treasury(),
         },
         Instruction::CreatePool {
+            owner_program: None,
             namespace: AccountId::new([0xAD; 32]),
             token0_amount: 800,
             token1_amount: 25,
@@ -1248,6 +1271,7 @@ fn every_instruction_survives_the_guest_wire_format() {
             close_timestamp: Some(42),
             close_on_depletion: None,
             owner: AccountId::new([3; 32]),
+
             curve_program_id: [7; 8],
         },
         Instruction::SwapExactInput {
@@ -1345,10 +1369,12 @@ fn namespace_config(namespace: AccountId, fee: u16, treasury: AccountId) -> Acco
 
 fn namespace_pool(namespace: AccountId) -> AccountWithMetadata {
     let state = PoolAccount {
+        owner_program: None,
         namespace,
         token0_definition_id: AccountId::new([1; 32]),
         token1_definition_id: AccountId::new([2; 32]),
         owner: AccountId::new([3; 32]),
+
         pool: Pool::create(800, 100, 1000, 100, None, None).unwrap(),
     };
     AccountWithMetadata {
@@ -1667,6 +1693,7 @@ fn pool_creation_binds_namespace_and_rejects_a_different_config() {
                 namespace_config(namespace, 0, new_treasury()),
             ],
             Instruction::CreatePool {
+                owner_program: None,
                 namespace,
                 token0_amount: 800,
                 token1_amount: 0,
@@ -1699,5 +1726,106 @@ fn pool_creation_binds_namespace_and_rejects_a_different_config() {
     assert!(
         std::panic::catch_unwind(|| process_instruction(accounts, instruction, CURVE_PROGRAM_ID))
             .is_err()
+    );
+}
+
+#[test]
+fn namespace_authority_follows_the_nft_between_holders() {
+    let namespace = AccountId::new([81; 32]);
+    let holder = |id| AccountWithMetadata {
+        account_id: AccountId::new([id; 32]),
+        is_authorized: true,
+        account: Account {
+            program_owner: programs::token().id(),
+            data: Data::from(&TokenHolding::NftMaster {
+                definition_id: namespace,
+                print_balance: 1,
+            }),
+            ..Account::default()
+        },
+    };
+    let mut config = AccountWithMetadata {
+        account_id: compute_config_pda(namespace, CURVE_PROGRAM_ID),
+        account: Account::default(),
+        is_authorized: false,
+    };
+    for (id, fee) in [(82, 100), (83, 200)] {
+        let pre = vec![config.clone(), holder(id)];
+        let (post, _) = process_instruction(
+            pre.clone(),
+            Instruction::UpdateConfig {
+                namespace,
+                admin: namespace,
+                protocol_fee_bps: fee,
+                treasury: new_treasury(),
+            },
+            CURVE_PROGRAM_ID,
+        );
+        lee_core::program::validate_execution(&pre, &post, CURVE_PROGRAM_ID).unwrap();
+        config.account = post[0].account().clone();
+        config.account.program_owner = CURVE_PROGRAM_ID;
+        assert_eq!(
+            Config::try_from(&config.account.data)
+                .unwrap()
+                .protocol_fee_bps,
+            fee
+        );
+    }
+}
+
+#[test]
+fn namespace_rejects_spent_copied_forged_and_unsigned_authority() {
+    let namespace = NAMESPACE_CREATOR;
+    let config = initialized_config(namespace);
+    let mut invalid = vec![];
+    let mut spent = signer(namespace);
+    spent.account.data = Data::from(&TokenHolding::NftMaster {
+        definition_id: namespace,
+        print_balance: 0,
+    });
+    invalid.push(spent);
+    let mut copy = signer(namespace);
+    copy.account.data = Data::from(&TokenHolding::NftPrintedCopy {
+        definition_id: namespace,
+        owned: true,
+    });
+    invalid.push(copy);
+    let mut forged = signer(namespace);
+    forged.account.program_owner = [99; 8];
+    invalid.push(forged);
+    let mut unsigned = signer(namespace);
+    unsigned.is_authorized = false;
+    invalid.push(unsigned);
+    for authority in invalid {
+        assert!(
+            std::panic::catch_unwind(|| process_instruction(
+                vec![config.clone(), authority],
+                Instruction::RenounceAdmin { namespace },
+                CURVE_PROGRAM_ID
+            ))
+            .is_err()
+        );
+    }
+    assert_eq!(crate::authority::TOKEN_PROGRAM_ID, programs::token().id());
+}
+
+#[test]
+fn pool_close_rights_follow_the_owner_nft() {
+    let mut pool = namespace_pool(NAMESPACE_CREATOR);
+    let state = PoolAccount::try_from(&pool.account.data).unwrap();
+    let mut holder = signer(state.owner);
+    holder.account_id = AccountId::new([91; 32]);
+    let mut clock = trusted_clock(1);
+    clock.account.program_owner = [88; 8];
+    let pre = vec![pool.clone(), holder, clock];
+    let (post, _) = process_instruction(pre.clone(), Instruction::ClosePool, CURVE_PROGRAM_ID);
+    lee_core::program::validate_execution(&pre, &post, CURVE_PROGRAM_ID).unwrap();
+    pool.account = post[0].account().clone();
+    assert_eq!(
+        PoolAccount::try_from(&pool.account.data)
+            .unwrap()
+            .pool
+            .effective_lifecycle(1),
+        pool::PoolLifecycle::Closed
     );
 }

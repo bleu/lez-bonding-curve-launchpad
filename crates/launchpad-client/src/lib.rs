@@ -733,8 +733,207 @@ pub fn build_renounce_admin_invocation(
         instruction: CurveInstruction::RenounceAdmin { namespace },
     }
 }
+/// Issues a single, unprintable NFT master as a stable authority identity.
+pub fn build_create_authority_invocation(
+    definition: AccountId,
+    holder: AccountId,
+    metadata: AccountId,
+    name: String,
+    uri: String,
+) -> PublicInvocation<token_core::Instruction> {
+    PublicInvocation {
+        program_id: curve_core::authority::TOKEN_PROGRAM_ID,
+        account_ids: vec![definition, holder, metadata],
+        signer_accounts: vec![definition, holder, metadata],
+        instruction: token_core::Instruction::NewDefinitionWithMetadata {
+            new_definition: token_core::NewTokenDefinition::NonFungible {
+                name,
+                printable_supply: 1,
+            },
+            metadata: Box::new(token_core::NewTokenMetadata {
+                standard: token_core::MetadataStandard::Simple,
+                uri,
+                creators: String::new(),
+            }),
+        },
+    }
+}
+
+/// Moves the entire authority. Both accounts sign so a fresh recipient can be claimed.
+pub fn build_transfer_authority_invocation(
+    holder: AccountId,
+    recipient: AccountId,
+) -> PublicInvocation<token_core::Instruction> {
+    PublicInvocation {
+        program_id: curve_core::authority::TOKEN_PROGRAM_ID,
+        account_ids: vec![holder, recipient],
+        signer_accounts: vec![holder, recipient],
+        instruction: token_core::Instruction::Transfer {
+            amount_to_transfer: 1,
+        },
+    }
+}
+
+/// Encodes an app action with exactly one NFT-holder signer for the private router.
+pub fn build_private_authority_instruction<I: Serialize>(
+    action: &PublicInvocation<I>,
+    holder: AccountId,
+) -> Result<private_flow_core::PrivateAuthorityInstruction> {
+    anyhow::ensure!(
+        action.signer_accounts == vec![holder],
+        "private authority action must use its NFT holder as the only signer"
+    );
+    let authority_index = action
+        .account_ids
+        .iter()
+        .position(|id| *id == holder)
+        .context("action does not include the authority holder")?;
+    anyhow::ensure!(
+        action
+            .account_ids
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+            == action.account_ids.len(),
+        "action accounts must be distinct"
+    );
+    Ok(private_flow_core::PrivateAuthorityInstruction {
+        program_id: action.program_id,
+        instruction_data: Program::serialize_instruction(&action.instruction)?,
+        authority_index,
+    })
+}
+
+/// Executes an app role operation with a fresh public NFT holder, returning the NFT to source.
+/// `build` constructs the action and its payout ATAs for that fresh holder.
+pub async fn submit_private_authority<I: Serialize>(
+    wallet: &mut WalletCore,
+    router: &Program,
+    action_program: &Program,
+    extra_dependencies: Vec<Program>,
+    source: AccountId,
+    build: impl FnOnce(AccountId) -> Result<PublicInvocation<I>>,
+) -> Result<PrivateBuyReceipt> {
+    let source_identity = wallet
+        .resolve_private_account(source)
+        .context("wallet does not control private authority source")?;
+    let (holder, _) = wallet.create_new_account_public(None);
+    wallet
+        .store_config_changes()
+        .await
+        .context("persisting authority holder key")?;
+    let action = build(holder)?;
+    anyhow::ensure!(
+        action.program_id == action_program.id(),
+        "action program does not match supplied guest"
+    );
+    anyhow::ensure!(
+        !action.account_ids.contains(&source),
+        "private authority source cannot also be an action account"
+    );
+    let instruction = build_private_authority_instruction(&action, holder)?;
+    let mut identities = vec![source_identity];
+    identities.extend(action.account_ids.iter().map(|id| {
+        if *id == holder {
+            AccountIdentity::Public(*id)
+        } else {
+            AccountIdentity::PublicNoSign(*id)
+        }
+    }));
+    let mut dependencies: HashMap<_, _> = extra_dependencies
+        .into_iter()
+        .map(|program| (program.id(), program))
+        .collect();
+    for program in [action_program.clone(), programs::token(), programs::ata()] {
+        dependencies.insert(program.id(), program);
+    }
+    let (transaction_hash, _) = wallet
+        .send_privacy_preserving_tx(
+            identities,
+            Program::serialize_instruction(instruction)?,
+            &ProgramWithDependencies::new(router.clone(), dependencies),
+        )
+        .await
+        .context("submitting atomic private authority action")?;
+    Ok(PrivateBuyReceipt {
+        transaction_hash,
+        transient_public_account: holder,
+        private_destination: source,
+    })
+}
+
+/// Reads the stable NFT identity for CLI defaults without treating a holder address as a role.
+pub async fn load_authority_identity(
+    wallet: &WalletCore,
+    holder: AccountId,
+    private: bool,
+) -> Result<AccountId> {
+    let account = if private {
+        wallet
+            .get_account_private(holder)
+            .context("private authority holding is unavailable")?
+    } else {
+        wallet.get_account_public(holder).await?
+    };
+    anyhow::ensure!(
+        account.program_owner == curve_core::authority::TOKEN_PROGRAM_ID,
+        "authority holding must belong to the token program"
+    );
+    match token_core::TokenHolding::try_from(&account.data)? {
+        token_core::TokenHolding::NftMaster {
+            definition_id,
+            print_balance: 1,
+        } => Ok(definition_id),
+        _ => Err(anyhow!(
+            "authority requires an NFT master with one remaining unit"
+        )),
+    }
+}
+
+/// Transfers authority across public/private state using the pinned token guest.
+pub async fn transfer_authority(
+    wallet: &mut WalletCore,
+    source: &str,
+    destination: &str,
+) -> Result<HashType> {
+    let from = parse_account_id(source)?;
+    let to = parse_account_id(destination)?;
+    anyhow::ensure!(from != to, "authority source and destination must differ");
+    load_authority_identity(wallet, from, source.starts_with("Private/")).await?;
+    let identity = |value: &str, id| -> Result<AccountIdentity> {
+        if value.starts_with("Private/") {
+            wallet
+                .resolve_private_account(id)
+                .context("wallet does not control private holding")
+        } else {
+            Ok(AccountIdentity::Public(id))
+        }
+    };
+    if source.starts_with("Private/") || destination.starts_with("Private/") {
+        let accounts = vec![identity(source, from)?, identity(destination, to)?];
+        let (hash, _) = wallet
+            .send_privacy_preserving_tx(
+                accounts,
+                Program::serialize_instruction(token_core::Instruction::Transfer {
+                    amount_to_transfer: 1,
+                })?,
+                &programs::token().into(),
+            )
+            .await?;
+        Ok(hash)
+    } else {
+        submit_public_invocation(
+            wallet,
+            &programs::token(),
+            build_transfer_authority_invocation(from, to),
+        )
+        .await
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::{build_create_authority_invocation, build_transfer_authority_invocation};
     use factory_core::{
         compute_definition_pda, compute_escrow_pda, compute_factory_pda, compute_metadata_pda,
         compute_mint_pda,
@@ -752,6 +951,60 @@ mod tests {
 
     const FACTORY_PROGRAM_ID: [u32; 8] = [7; 8];
     const CURVE_PROGRAM_ID: [u32; 8] = [6; 8];
+
+    #[test]
+    fn private_authority_builder_preserves_action_and_locates_holder() {
+        let holder = AccountId::new([61; 32]);
+        let namespace = AccountId::new([62; 32]);
+        let action = build_update_config_invocation(
+            namespace,
+            CURVE_PROGRAM_ID,
+            holder,
+            namespace,
+            50,
+            AccountId::new([63; 32]),
+        );
+        let routed = super::build_private_authority_instruction(&action, holder).unwrap();
+        assert_eq!(routed.authority_index, 1);
+        let decoded: curve_core::Instruction =
+            risc0_zkvm::serde::from_slice(&routed.instruction_data).unwrap();
+        assert_eq!(decoded, action.instruction);
+        assert!(
+            super::build_private_authority_instruction(&action, AccountId::new([64; 32])).is_err()
+        );
+    }
+
+    #[test]
+    fn authority_creation_issues_one_master_and_transfer_moves_one_unit() {
+        let definition = AccountId::new([71; 32]);
+        let holder = AccountId::new([72; 32]);
+        let metadata = AccountId::new([73; 32]);
+        let creation = build_create_authority_invocation(
+            definition,
+            holder,
+            metadata,
+            "Admin".into(),
+            "https://example.invalid/admin".into(),
+        );
+        assert_eq!(creation.signer_accounts, vec![definition, holder, metadata]);
+        assert!(matches!(
+            creation.instruction,
+            token_core::Instruction::NewDefinitionWithMetadata {
+                new_definition: token_core::NewTokenDefinition::NonFungible {
+                    printable_supply: 1,
+                    ..
+                },
+                ..
+            }
+        ));
+        let transfer = build_transfer_authority_invocation(holder, AccountId::new([74; 32]));
+        assert!(matches!(
+            transfer.instruction,
+            token_core::Instruction::Transfer {
+                amount_to_transfer: 1
+            }
+        ));
+    }
 
     #[test]
     fn namespace_selection_changes_factory_pool_and_swap_config_together() {
@@ -1131,6 +1384,7 @@ mod tests {
             token0_definition_id: token_definition,
             token1_definition_id: collateral_definition,
             owner: AccountId::new([1; 32]),
+            owner_program: None,
             pool: Pool::create(800, 100, 1_000, 100, None, None).expect("valid pool"),
         };
         let config = curve_core::Config {

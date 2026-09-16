@@ -320,6 +320,7 @@ pub fn create_factory_pool(
         "Creator escrow ID does not match PDA"
     );
     assert!(creator.is_authorized, "Creator authorization is missing");
+    curve_core::authority::identity(&creator);
     let now = trusted_time(&clock);
     assert!(
         end_timestamp.is_none_or(|timestamp| timestamp > now),
@@ -465,6 +466,10 @@ pub fn create_factory_pool(
                 close_timestamp: end_timestamp,
                 close_on_depletion: Some(DepletionSide::Token0),
                 owner: factory.account_id,
+                owner_program: Some((
+                    factory_program_id,
+                    *compute_factory_seed(namespace, launch_salt).as_bytes(),
+                )),
                 curve_program_id,
             },
         )
@@ -483,7 +488,11 @@ pub fn create_factory_pool(
         virtual_token_reserve,
         virtual_collateral_reserve,
         curve_program_id,
-        creator_commitment: compute_creator_commitment(namespace, creator.account_id, launch_salt),
+        creator_commitment: compute_creator_commitment(
+            namespace,
+            curve_core::authority::identity(&creator),
+            launch_salt,
+        ),
         creator_escrow_id: creator_escrow.account_id,
         pool_id: pool.account_id,
         creator_allocation_claimed: false,
@@ -537,8 +546,13 @@ pub fn claim_creator_allocation(
         "Factory account ID does not match PDA"
     );
     assert!(creator.is_authorized, "Creator authorization is missing");
+    curve_core::authority::identity(&creator);
     assert_eq!(
-        compute_creator_commitment(state.namespace, creator.account_id, state.launch_salt),
+        compute_creator_commitment(
+            state.namespace,
+            curve_core::authority::identity(&creator),
+            state.launch_salt
+        ),
         state.creator_commitment,
         "Creator commitment does not match launch"
     );
@@ -625,6 +639,7 @@ pub fn claim_creator_allocation(
             AccountPostState::new(creator.account),
             AccountPostState::new(token_definition.account),
             AccountPostState::new(creator_holding.account.clone()),
+            AccountPostState::new(clock.account),
         ],
         calls,
     )
@@ -648,8 +663,13 @@ pub fn close_factory_pool(
         "Factory account ID does not match PDA"
     );
     assert!(creator.is_authorized, "Creator authorization is missing");
+    curve_core::authority::identity(&creator);
     assert_eq!(
-        compute_creator_commitment(state.namespace, creator.account_id, state.launch_salt),
+        compute_creator_commitment(
+            state.namespace,
+            curve_core::authority::identity(&creator),
+            state.launch_salt
+        ),
         state.creator_commitment,
         "Creator commitment does not match launch"
     );
@@ -666,6 +686,7 @@ pub fn close_factory_pool(
             AccountPostState::new(factory.account),
             AccountPostState::new(pool.account.clone()),
             AccountPostState::new(creator.account),
+            AccountPostState::new(clock.account.clone()),
         ],
         vec![
             ChainedCall::new(
@@ -707,8 +728,13 @@ pub fn withdraw_factory_proceeds(
         "Factory account ID does not match PDA"
     );
     assert!(creator.is_authorized, "Creator authorization is missing");
+    curve_core::authority::identity(&creator);
     assert_eq!(
-        compute_creator_commitment(state.namespace, creator.account_id, state.launch_salt),
+        compute_creator_commitment(
+            state.namespace,
+            curve_core::authority::identity(&creator),
+            state.launch_salt
+        ),
         state.creator_commitment,
         "Creator commitment does not match launch"
     );
@@ -765,7 +791,7 @@ pub fn withdraw_factory_proceeds(
                 factory_collateral_ata.clone(),
                 pool_token_ata.clone(),
                 pool_collateral_ata.clone(),
-                clock,
+                clock.clone(),
             ],
             &CurveInstruction::WithdrawReserves,
         )
@@ -838,6 +864,7 @@ pub fn withdraw_factory_proceeds(
             AccountPostState::new(pool_collateral_ata.account),
             AccountPostState::new(creator_token_ata.account),
             AccountPostState::new(creator_collateral_ata.account),
+            AccountPostState::new(clock.account),
         ],
         calls,
     )
@@ -1021,9 +1048,21 @@ mod tests {
     }
 
     fn creator(id: u8, is_authorized: bool) -> AccountWithMetadata {
+        let account_id = AccountId::new([id; 32]);
         AccountWithMetadata {
-            account: Account::default(),
-            account_id: AccountId::new([id; 32]),
+            account: if is_authorized {
+                Account {
+                    program_owner: curve_core::authority::TOKEN_PROGRAM_ID,
+                    data: Data::from(&TokenHolding::NftMaster {
+                        definition_id: account_id,
+                        print_balance: 1,
+                    }),
+                    ..Account::default()
+                }
+            } else {
+                Account::default()
+            },
+            account_id,
             is_authorized,
         }
     }
@@ -1096,6 +1135,36 @@ mod tests {
             state,
         )
     }
+    #[test]
+    fn creator_rights_follow_the_nft_to_a_new_public_holder() {
+        let original = creator(9, true);
+        let (factory, state) = delayed_factory(&original);
+        let mut next = original.clone();
+        next.account_id = AccountId::new([77; 32]);
+        next.account.program_owner = curve_core::authority::TOKEN_PROGRAM_ID;
+        next.account.data = Data::from(&TokenHolding::NftMaster {
+            definition_id: original.account_id,
+            print_balance: 1,
+        });
+        let pool = AccountWithMetadata {
+            account_id: state.pool_id,
+            account: Account::default(),
+            is_authorized: false,
+        };
+        let mut clock = trusted_clock(1);
+        clock.account.program_owner = [88; 8];
+        let mut factory = factory;
+        factory.account.program_owner = FACTORY_PROGRAM_ID;
+        let pre = vec![factory, pool, next, clock];
+        let (posts, calls) = process_instruction(
+            pre.clone(),
+            Instruction::CloseFactoryPool,
+            FACTORY_PROGRAM_ID,
+        );
+        lee_core::program::validate_execution(&pre, &posts, FACTORY_PROGRAM_ID).unwrap();
+        assert_eq!(calls.len(), 1);
+    }
+
     #[test]
     fn namespace_scopes_all_factory_accounts_even_with_the_same_salt() {
         let a = AccountId::new([51; 32]);
@@ -1290,6 +1359,7 @@ mod tests {
                     token0_definition_id: state.token_definition_id,
                     token1_definition_id: state.collateral_definition_id,
                     owner: factory.account_id,
+                    owner_program: None,
                     pool: closed_pool,
                 }),
                 ..Account::default()
@@ -1338,6 +1408,7 @@ mod tests {
                     token0_definition_id: state.token_definition_id,
                     token1_definition_id: state.collateral_definition_id,
                     owner: factory.account_id,
+                    owner_program: None,
                     pool: closed_pool,
                 }),
                 ..Account::default()
@@ -1601,7 +1672,7 @@ mod tests {
             FACTORY_PROGRAM_ID,
         );
 
-        assert_eq!(post_states.len(), 3);
+        assert_eq!(post_states.len(), 4);
         let [call]: [_; 1] = calls.try_into().expect("one curve close call");
         assert_eq!(call.program_id, CURVE_PROGRAM_ID);
         assert_eq!(call.pre_states[0], pool);
@@ -1649,6 +1720,7 @@ mod tests {
                     token0_definition_id: state.token_definition_id,
                     token1_definition_id: state.collateral_definition_id,
                     owner: factory.account_id,
+                    owner_program: None,
                     pool: closed_pool,
                 }),
                 ..Account::default()
