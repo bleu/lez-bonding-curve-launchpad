@@ -44,3 +44,5 @@ Launch-facing SDKs may say purchase, redemption, token-for-sale, collateral, cre
 - `verify/` — reviewer-facing verification.
 
 The factory owns creator commitments, launch allocation, post-close creator claims, and DEX-seed accounting; the pool must not grow those fields.
+
+Factory creation and proceeds settlement persist resumable stages (ADR 0008). Pending pools reject trading and lifecycle actions until funded. Each stage rechecks the creator NFT and commits atomically with its child calls; the whole workflow spans transactions.

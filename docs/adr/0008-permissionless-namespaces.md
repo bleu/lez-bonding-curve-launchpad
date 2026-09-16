@@ -71,19 +71,47 @@ runtime account rules as well as role checks, transfer to a new holder, rejectio
 of spent/copied/forged authority, and the private round trip. Guest execution in
 dev mode does not establish production-proving or live-sequencer performance.
 
-## Execution evidence and remaining settlement work
+## Resumable creation and settlement
 
-The actual pinned RISC0 guests execute the private NFT round trip for namespace
-configuration, direct pool close, and factory-mediated close. Tests also reject
-an unrelated authority NFT. These run in development proving mode with synthetic
-private membership witnesses, not a live sequencer.
+The pinned runtime limits a private graph to ten calls including its root. Factory
+creation therefore advances four confirmed stages: mint the fixed supply, allocate
+factory/creator balances, prepare the pool and reserve ATAs, then fund and activate
+it. Pending pools reject swaps, close, and reserve withdrawal. The original deadline
+is never extended: late activation creates a closed pool that can still settle.
 
-The pinned runtime limits a private execution graph to ten calls, including its
-root. The authority router consumes three calls in addition to the app action and
-its descendants. Existing full sale creation and proceeds settlement exceed that
-budget for some allocations; their existing chained account snapshots also need
-correction. Fresh transient payout holders need their token accounts initialized.
-The common NFT authorization check does not remove these settlement constraints.
-Do not treat SDK invocation construction as proof that these larger graphs execute.
-A staged sale lifecycle is required before claiming automatic private execution
-for every creator operation; each stage must recheck the same NFT identity.
+Proceeds settlement advances five confirmed stages: prepare the factory collateral
+ATA, withdraw the pool reserves, burn the captured unsold amount, pay the exact `R`
+allocation, and pay the captured collateral. Payout stages initialize the current
+holder's ATA when necessary. Donations cannot increase the recorded burn or payout.
+Allocation claiming is independent and transfers exactly the committed `C` once.
+
+Each stage rechecks the same creator NFT, is atomic, and advances persisted state
+only with its successful child calls. Completed stages cannot pay twice. The entire
+workflow spans transactions; an interruption leaves a resumable intermediate state.
+Transferring the NFT between stages transfers remaining rights. Losing or burning
+the sole NFT also loses those rights. Every private stage returns the NFT to its
+private source and uses at most nine executions, including the router.
+
+`FactorySession` and CLI `create-sale`/`withdraw` confirm each transaction before
+building the next from chain state. Retrying the same launch resumes its remaining
+stages; completed workflows return without another transaction. Confirmed private
+account updates are decrypted and saved before reuse. After a process crash or
+confirmation timeout, sync the wallet before retrying with the same launch salt.
+Retain the transient public holder keys: creator payouts remain public.
+
+The pinned public runtime inherits PDA authorization down the call tree; the privacy
+circuit also remembers it across siblings. The SDK selects an explicit `Private`
+instruction wrapper for privacy execution, which factory forwards to curve calls.
+Ordinary instructions use public metadata rules. Neither mode grants authority:
+the runtime verifies every supplied authorization and account snapshot. Nested
+wrappers are rejected. Rust instruction enums remain the authoritative wire format;
+SPEL declarations describe the inner operations and their account layouts.
+
+## Execution evidence
+
+Actual pinned RISC0 guests and native public transactions cover fee-bearing swaps,
+four-stage creation, allocation claim, five-stage settlement, fresh NFT holders and
+payout ATAs, zero allocations, depletion, late activation, and settlement replay
+rejection. Private authority tests also cover configuration, direct/factory close,
+and unrelated-NFT rejection. Private tests use development proving and synthetic
+membership witnesses, not production proofs or a live sequencer.

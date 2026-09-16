@@ -146,7 +146,7 @@ RISC0-serialized action. It is not represented by a fixed-account SPEL declarati
 
 Two program layers. The curve is a neutral bounded AMM over an ordered token pair and is the RFP deliverable. The factory is the launch adapter: it mints a fixed supply, owns launch allocation policy, retains any DEX-seed allocation, and creates a pool with only the amounts intended for trading. Direct pool creation remains supported.
 
-The pool wire interface is intentionally small and breaking for this PoC: `CreatePool`, `SwapExactInput`, `SwapExactOutput`, `ClosePool`, and `WithdrawReserves`. Swaps work in either direction; `tokenIn` selects the input definition. Optional expiry uses trusted LEZ chain time, and expiry itself is sufficient to permit an owner-authorized full withdrawal.
+The pool wire interface is intentionally small and breaking for this PoC: `CreatePool`, `ActivatePool`, `SwapExactInput`, `SwapExactOutput`, `ClosePool`, and `WithdrawReserves`. Swaps work in either direction; `tokenIn` selects the input definition. Optional expiry uses trusted LEZ chain time, and expiry itself is sufficient to permit an owner-authorized full withdrawal.
 
 ## Supply boundary
 
@@ -197,14 +197,20 @@ remain in public token accounts; shielding authority does not shield the proceed
 See [ADR 0008](docs/adr/0008-permissionless-namespaces.md) for the custody and privacy
 boundaries.
 
-The private authority guest is execution-tested for configuration and for closing
-direct and factory pools. Larger sale creation and settlement graphs still need
-staging to fit LEZ's ten-call limit and corrected intermediate account states;
-this change does not claim those private flows work end to end. Run the guest
-checks after building `methods/`:
+Creation and withdrawal are resumable workflows. The CLI confirms each stage and
+continues automatically; rerun the same command and launch salt after interruption.
+Each stage is atomic and checks the creator NFT again. Creation uses four stages;
+withdrawal uses five. Pending pools cannot trade. A launch resumed after its deadline
+activates closed, allowing settlement. After a crash or confirmation timeout, sync
+the wallet before retrying a private workflow. Payouts remain in public holder ATAs.
+
+Native public execution and actual private guest execution cover the complete sale
+lifecycle, fresh payout holders, fee-bearing swaps, and zero allocations. These tests
+use development proving, not a live sequencer or production proofs. Build `methods/`
+first, then run:
 
 ```bash
-RISC0_DEV_MODE=1 cargo test -p launchpad-client --test private_authority -- --ignored
+RISC0_DEV_MODE=1 cargo test -p launchpad-client --test private_authority --test settlement -- --ignored
 ```
 
 Zero fees are accepted. The 10,000-basis-point denominator is an arithmetic boundary, not a commercial tier or policy cap; a buy whose fee consumes its input is rejected. Swaps read the current namespace configuration at execution, and enforce the trader's net-output floor or gross-input cap. `price --sell --tokens <amount>` shows raw collateral, fee, and net proceeds; price/status output includes the namespace, fee rate, and treasury.
@@ -213,7 +219,7 @@ This changes the wire interfaces and account derivation. Rebuild and redeploy th
 
 ## Ownership and privacy boundary
 
-Pool ownership is deliberately public. `create_pool` stores its owner NFT definition (or internal program PDA) in pool state and scopes the pool PDA by namespace, ordered token pair, and owner. Direct creators may own pools themselves; the factory path supplies a factory-owned PDA so close and withdrawal must pass through factory policy. Creation verifies the owner's source ATAs, creates both pool-owned reserve ATAs, and atomically transfers both initial real reserves.
+Pool ownership is deliberately public. `create_pool` stores its owner NFT definition (or internal program PDA) in pool state and scopes the pool PDA by namespace, ordered token pair, and owner. Direct creators may own pools themselves; the factory path supplies a factory-owned PDA so close and withdrawal must pass through factory policy. Creation verifies the owner's source ATAs, creates both pool-owned reserve ATAs, and transfers both initial real reserves. Factory creation prepares the ATAs first and atomically funds both reserves in a later activation stage.
 
 Creator identity and privacy are launch policy. The factory commits to the creator NFT definition while exposing its own program PDA as the neutral pool owner.
 
