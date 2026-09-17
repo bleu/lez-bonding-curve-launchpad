@@ -3342,7 +3342,9 @@ dependencies = [
  "common",
  "hex",
  "launchpad-client",
+ "lee",
  "pool",
+ "programs",
  "serde",
  "serde_json",
  "tokio",
@@ -3359,13 +3361,17 @@ dependencies = [
  "common",
  "curve-core",
  "factory-core",
+ "hex",
  "lee",
  "lee_core",
  "pool",
  "private-flow-core",
  "programs",
+ "risc0-zkvm",
  "sequencer_service_rpc",
  "serde",
+ "token_core",
+ "tokio",
  "wallet",
 ]
 
@@ -5425,8 +5431,11 @@ dependencies = [
 name = "private-flow-core"
 version = "0.1.0"
 dependencies = [
+ "curve-core",
  "lee_core",
+ "risc0-zkvm",
  "serde",
+ "token_core",
 ]
 
 [[package]]

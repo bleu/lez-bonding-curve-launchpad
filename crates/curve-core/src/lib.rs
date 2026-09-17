@@ -17,6 +17,7 @@ use lee_core::{
 use pool::Pool;
 use serde::{Deserialize, Serialize};
 
+pub mod authority;
 pub mod dispatch;
 pub mod pool_create;
 pub mod pool_lifecycle;
@@ -29,17 +30,22 @@ mod tests;
 /// Curve program instruction. Token accounts are supplied by the guest/token adapter.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Instruction {
+    /// Select the pinned privacy circuit's transaction-wide PDA authorization rules.
+    Private { instruction: Box<Instruction> },
     /// Creates the config PDA on the first call, replaces it whole after.
     ///
     /// Required accounts:
     /// - Config PDA
-    /// - Authority (authorized): the genesis admin on the first call, the stored
+    /// - Authority (authorized): the namespace identity on the first call, the stored
     ///   admin after
     UpdateConfig {
+        namespace: AccountId,
         admin: AccountId,
         protocol_fee_bps: u16,
         treasury: AccountId,
     },
+    /// Permanently disables namespace administration; swaps retain the last settings.
+    RenounceAdmin { namespace: AccountId },
     /// Creates a bounded pool over an ordered token pair.
     ///
     /// Required accounts:
@@ -52,6 +58,8 @@ pub enum Instruction {
     /// - Pool PDA's token 0 ATA (uninitialized)
     /// - Pool PDA's token 1 ATA (uninitialized)
     CreatePool {
+        defer_funding: bool,
+        namespace: AccountId,
         token0_amount: u128,
         token1_amount: u128,
         virtual_reserve0: u128,
@@ -59,6 +67,7 @@ pub enum Instruction {
         close_timestamp: Option<u64>,
         close_on_depletion: Option<DepletionSide>,
         owner: AccountId,
+        owner_program: Option<(ProgramId, [u8; 32])>,
         /// Included in the wire instruction following the LEZ program convention;
         /// dispatch verifies it against the executing program id.
         curve_program_id: ProgramId,
@@ -73,7 +82,6 @@ pub enum Instruction {
     /// - Pool input ATA
     /// - Pool output ATA
     /// - Participant output ATA
-    /// - Treasury input ATA
     /// - Trusted LEZ clock
     SwapExactInput {
         amount_in: u128,
@@ -86,10 +94,16 @@ pub enum Instruction {
         max_amount_in: u128,
         token_in: AccountId,
     },
+    /// Funds a prepared pool; same ten accounts as CreatePool.
+    ActivatePool,
     /// Owner-only logical closure.
     ClosePool,
-    /// Owner-only full withdrawal after manual closure or expiry.
+    /// Owner-only full withdrawal after manual closure or expiry, collecting fees atomically.
+    /// Accounts: pool, owner, owner ATA0/ATA1, pool ATA0/ATA1, clock, config, treasury ATA1.
+    /// Omit the last account when it aliases owner ATA1 (LEZ requires unique IDs).
     WithdrawReserves,
+    /// Permissionless collection: pool, namespace config, pool token1 ATA, treasury token1 ATA.
+    CollectFees,
 }
 
 /// Wire-level side selection for optional depletion closure.
@@ -108,11 +122,6 @@ impl From<DepletionSide> for pool::TokenSide {
     }
 }
 
-/// The admin key allowed to initialize the config. Compiled in, so it is part of the
-/// risc0 image ID: changing it is a different program, and it cannot be front-run.
-/// Replace with the operator's key before deploying. See the README, "Admin authority".
-pub const GENESIS_ADMIN: AccountId = AccountId::new([0xAD; 32]);
-
 /// The protocol fee denominator. A fee at this rate consumes its buy-side input,
 /// so the swap state machine rejects it as untradeable.
 pub const MAX_FEE_BPS: u16 = 10_000;
@@ -130,8 +139,8 @@ pub const ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID: ProgramId = [
     0xf800_15d5,
 ];
 
-/// The protocol settings: one singleton PDA per deployment, read live by every trade.
-/// Created and replaced whole by `update_config`. See `docs/adr/0003`.
+/// The protocol settings of one namespace, read live by its trades.
+/// Created and replaced whole by `update_config`. See `docs/adr/0008`.
 #[derive(Clone, Default, BorshSerialize, BorshDeserialize)]
 pub struct Config {
     pub admin: AccountId,
@@ -158,23 +167,24 @@ impl From<&Config> for Data {
 }
 
 #[must_use]
-pub fn compute_config_pda(curve_program_id: ProgramId) -> AccountId {
-    AccountId::for_public_pda(&curve_program_id, &compute_config_pda_seed())
+pub fn compute_config_pda(namespace: AccountId, curve_program_id: ProgramId) -> AccountId {
+    AccountId::for_public_pda(&curve_program_id, &compute_config_pda_seed(namespace))
 }
 
 #[must_use]
-pub fn compute_config_pda_seed() -> PdaSeed {
-    let mut bytes = [0_u8; 32];
-    bytes[..6].copy_from_slice(b"config");
-    PdaSeed::new(bytes)
+pub fn compute_config_pda_seed(namespace: AccountId) -> PdaSeed {
+    PdaSeed::new(namespace.to_bytes())
 }
 
 /// The pool PDA's contents: ordered token roles, owner, and bounded-AMM state.
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct PoolAccount {
+    pub funded: bool,
+    pub namespace: AccountId,
     pub token0_definition_id: AccountId,
     pub token1_definition_id: AccountId,
     pub owner: AccountId,
+    pub owner_program: Option<(ProgramId, [u8; 32])>,
     pub pool: Pool,
 }
 
@@ -195,9 +205,10 @@ impl From<&PoolAccount> for Data {
     }
 }
 
-/// One pool per ordered pair and owner. The pair hashes in fixed order.
+/// One pool per namespace, ordered pair and owner. The pair hashes in fixed order.
 #[must_use]
 pub fn compute_pool_pda(
+    namespace: AccountId,
     curve_program_id: ProgramId,
     token0_definition_id: AccountId,
     token1_definition_id: AccountId,
@@ -205,22 +216,24 @@ pub fn compute_pool_pda(
 ) -> AccountId {
     AccountId::for_public_pda(
         &curve_program_id,
-        &compute_pool_pda_seed(token0_definition_id, token1_definition_id, owner),
+        &compute_pool_pda_seed(namespace, token0_definition_id, token1_definition_id, owner),
     )
 }
 
 #[must_use]
 pub fn compute_pool_pda_seed(
+    namespace: AccountId,
     token0_definition_id: AccountId,
     token1_definition_id: AccountId,
     owner: AccountId,
 ) -> PdaSeed {
     use risc0_zkvm::sha::{Impl, Sha256 as _};
 
-    let mut bytes = [0; 96];
+    let mut bytes = [0; 128];
     bytes[0..32].copy_from_slice(&token0_definition_id.to_bytes());
     bytes[32..64].copy_from_slice(&token1_definition_id.to_bytes());
-    bytes[64..].copy_from_slice(&owner.to_bytes());
+    bytes[64..96].copy_from_slice(&owner.to_bytes());
+    bytes[96..].copy_from_slice(&namespace.to_bytes());
 
     PdaSeed::new(
         Impl::hash_bytes(&bytes)

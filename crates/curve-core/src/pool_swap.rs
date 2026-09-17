@@ -32,8 +32,8 @@ pub fn swap_exact_input(
     token_in: AccountId,
     curve_program_id: ProgramId,
 ) -> (Vec<AccountPostState>, SwapSettlement) {
-    let config_data = validated_config(&config, curve_program_id);
     let mut pool_account = validated_pool(&pool, curve_program_id);
+    let config_data = validated_config(&config, pool_account.namespace, curve_program_id);
     let (side, token_out) = direction(&pool_account, token_in);
     let now = trusted_time(&pool_account, clock);
     let outcome = pool_account
@@ -76,8 +76,8 @@ pub fn swap_exact_output(
     token_in: AccountId,
     curve_program_id: ProgramId,
 ) -> (Vec<AccountPostState>, SwapSettlement) {
-    let config_data = validated_config(&config, curve_program_id);
     let mut pool_account = validated_pool(&pool, curve_program_id);
+    let config_data = validated_config(&config, pool_account.namespace, curve_program_id);
     let (side, token_out) = direction(&pool_account, token_in);
     let now = trusted_time(&pool_account, clock);
     let outcome = pool_account
@@ -110,21 +110,38 @@ pub fn swap_exact_output(
     )
 }
 
-fn validated_config(config: &AccountWithMetadata, curve_program_id: ProgramId) -> Config {
+pub fn validated_config(
+    config: &AccountWithMetadata,
+    namespace: AccountId,
+    curve_program_id: ProgramId,
+) -> Config {
     assert_eq!(
         config.account_id,
-        compute_config_pda(curve_program_id),
+        compute_config_pda(namespace, curve_program_id),
         "Config account ID does not match PDA"
+    );
+    assert_eq!(
+        config.account.program_owner, curve_program_id,
+        "Config owner does not match program"
     );
     Config::try_from(&config.account.data).expect("Config account holds invalid data")
 }
 
-fn validated_pool(pool: &AccountWithMetadata, curve_program_id: ProgramId) -> PoolAccount {
+pub(crate) fn validated_pool(
+    pool: &AccountWithMetadata,
+    curve_program_id: ProgramId,
+) -> PoolAccount {
+    assert_eq!(
+        pool.account.program_owner, curve_program_id,
+        "Pool owner does not match program"
+    );
     let pool_account =
         PoolAccount::try_from(&pool.account.data).expect("Pool account holds invalid data");
+    assert!(pool_account.funded, "Pool funding is pending");
     assert_eq!(
         pool.account_id,
         compute_pool_pda(
+            pool_account.namespace,
             curve_program_id,
             pool_account.token0_definition_id,
             pool_account.token1_definition_id,

@@ -27,8 +27,6 @@ if [[ "$ownership" == "foreign" ]]; then
   fail "foreign listener detected; refusing to reset or stop a localnet not managed by this project"
 fi
 
-: "${GENESIS_ADMIN_ACCOUNT:?set GENESIS_ADMIN_ACCOUNT to the configured curve genesis-admin wallet account}"
-
 managed_localnet=false
 cleanup() {
   if ! "$managed_localnet"; then
@@ -72,7 +70,7 @@ run_launchpad_json() {
   shift
 
   local response
-  response=$(cargo run --quiet -p launchpad-cli -- --json "$@") \
+  response=$(cargo run --quiet -p launchpad-cli -- --json --namespace "$namespace" "$@") \
     || fail "$checkpoint command failed"
   assert_json "$checkpoint" "$response"
   printf '%s\n' "$response"
@@ -84,7 +82,7 @@ expect_launchpad_error() {
   shift 2
 
   local response
-  if response=$(cargo run --quiet -p launchpad-cli -- --json "$@" 2>&1); then
+  if response=$(cargo run --quiet -p launchpad-cli -- --json --namespace "$namespace" "$@" 2>&1); then
     fail "$checkpoint unexpectedly succeeded"
   fi
   assert_json "$checkpoint" "$response"
@@ -137,8 +135,13 @@ factory_program_path=$(find_guest_binary factory || true)
 [[ -n "$curve_program_path" && -n "$factory_program_path" ]] \
   || fail "lgs build did not produce the curve and factory guest binaries under target/riscv-guest or methods/target/riscv-guest"
 
-creator=${GENESIS_ADMIN_ACCOUNT#*/}
-treasury=$creator
+authority=$(cargo run --quiet -p launchpad-cli -- --json create-authority --name "E2E authority" --uri "") \
+  || fail "could not issue fixture authority NFT"
+namespace=$(jq -er '.authority' <<<"$authority") || fail "authority definition is missing"
+creator=$(jq -er '.holder' <<<"$authority") || fail "authority holder is missing"
+namespace=${namespace#*/}
+creator=${creator#*/}
+treasury=$(new_public_account)
 buyer_one=$(new_public_account)
 buyer_two=$(new_public_account)
 buyer_three=$(new_public_account)
@@ -323,7 +326,7 @@ withdraw=$(run_launchpad_json "creator withdrawal" withdraw \
   --creator "Public/$creator" \
   --factory-program-path "$factory_program_path" \
   --curve-program-path "$curve_program_path")
-jq -e '.status == "submitted"' >/dev/null <<<"$withdraw" \
-  || fail "creator withdrawal JSON did not report submission"
+jq -e '.status == "complete"' >/dev/null <<<"$withdraw" \
+  || fail "creator withdrawal JSON did not report completion"
 
 printf 'walkthrough complete: launch, buys, sell, auto-close, unlock, withdrawal\n'

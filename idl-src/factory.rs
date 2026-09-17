@@ -4,8 +4,8 @@
 pub mod factory {
     #[instruction]
     pub fn create_factory_pool(
-        #[account(init, pda = [literal("factory"), arg("launch_salt")])] factory: AccountWithMetadata,
-        #[account(init, pda = [literal("definition"), arg("launch_salt")])] token_definition: AccountWithMetadata,
+        #[account(init, pda = [literal("factory"), arg("launch_salt"), arg("namespace")])] factory: AccountWithMetadata,
+        #[account(init, pda = [literal("definition"), arg("launch_salt"), arg("namespace")])] token_definition: AccountWithMetadata,
         #[account(init)] mint: AccountWithMetadata,
         #[account(init)] metadata: AccountWithMetadata,
         #[account(init)] creator_escrow: AccountWithMetadata,
@@ -18,6 +18,8 @@ pub mod factory {
         #[account(init)] pool_token_ata: AccountWithMetadata,
         #[account(init)] pool_collateral_ata: AccountWithMetadata,
         clock: AccountWithMetadata,
+        config: AccountWithMetadata,
+        namespace: AccountId,
         launch_salt: [u8; 32],
         name: String,
         uri: String,
@@ -28,6 +30,25 @@ pub mod factory {
         virtual_collateral_reserve: u128,
         end_timestamp: Option<u64>,
         curve_program_id: ProgramId,
+    ) {}
+
+    #[instruction]
+    pub fn continue_creation(
+        #[account(mut)] factory: AccountWithMetadata,
+        token_definition: AccountWithMetadata,
+        #[account(mut)] mint: AccountWithMetadata,
+        metadata: AccountWithMetadata,
+        #[account(mut)] creator_escrow: AccountWithMetadata,
+        #[account(signer)] creator: AccountWithMetadata,
+        #[account(mut)] creator_token_ata: AccountWithMetadata,
+        collateral_definition: AccountWithMetadata,
+        #[account(mut)] factory_token_ata: AccountWithMetadata,
+        #[account(mut)] factory_collateral_ata: AccountWithMetadata,
+        #[account(mut)] pool: AccountWithMetadata,
+        #[account(mut)] pool_token_ata: AccountWithMetadata,
+        #[account(mut)] pool_collateral_ata: AccountWithMetadata,
+        clock: AccountWithMetadata,
+        config: AccountWithMetadata,
     ) {}
 
     #[instruction]
@@ -50,6 +71,7 @@ pub mod factory {
     ) {}
 
     #[instruction]
+    /// Omit trailing treasury_collateral_ata when already present in this account list.
     pub fn withdraw_factory_proceeds(
         #[account(mut)] factory: AccountWithMetadata,
         #[account(mut)] pool: AccountWithMetadata,
@@ -63,5 +85,7 @@ pub mod factory {
         #[account(mut)] creator_token_ata: AccountWithMetadata,
         #[account(mut)] creator_collateral_ata: AccountWithMetadata,
         clock: AccountWithMetadata,
+        config: AccountWithMetadata,
+        #[account(mut)] treasury_collateral_ata: AccountWithMetadata,
     ) {}
 }

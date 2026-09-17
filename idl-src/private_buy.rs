@@ -14,7 +14,6 @@ pub mod private_buy {
         config: AccountWithMetadata,
         #[account(mut)] pool_collateral_ata: AccountWithMetadata,
         #[account(mut)] pool_token_ata: AccountWithMetadata,
-        #[account(mut)] treasury_collateral_ata: AccountWithMetadata,
         clock: AccountWithMetadata,
         #[account(mut)] private_destination: AccountWithMetadata,
         curve_program_id: ProgramId,

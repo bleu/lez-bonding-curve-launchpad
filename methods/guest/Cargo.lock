@@ -1328,8 +1328,10 @@ dependencies = [
 name = "private-flow-core"
 version = "0.1.0"
 dependencies = [
+ "curve-core",
  "lee_core",
  "serde",
+ "token_core",
 ]
 
 [[package]]

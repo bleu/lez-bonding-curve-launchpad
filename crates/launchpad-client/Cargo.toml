@@ -19,6 +19,12 @@ programs.workspace = true
 sequencer_service_rpc.workspace = true
 serde.workspace = true
 wallet.workspace = true
+token_core.workspace = true
+hex.workspace = true
+tokio = { workspace = true, features = ["time"] }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+risc0-zkvm.workspace = true

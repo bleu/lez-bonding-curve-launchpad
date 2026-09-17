@@ -13,8 +13,8 @@
           "pda": {
             "seeds": [
               {
-                "kind": "const",
-                "value": "config"
+                "kind": "arg",
+                "path": "namespace"
               }
             ]
           }
@@ -27,6 +27,10 @@
         }
       ],
       "args": [
+        {
+          "name": "namespace",
+          "type": "account_id"
+        },
         {
           "name": "admin",
           "type": "account_id"
@@ -42,6 +46,37 @@
       ]
     },
     {
+      "name": "renounce_admin",
+      "accounts": [
+        {
+          "name": "config",
+          "writable": true,
+          "signer": false,
+          "init": false,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "arg",
+                "path": "namespace"
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "writable": false,
+          "signer": true,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "namespace",
+          "type": "account_id"
+        }
+      ]
+    },
+    {
       "name": "create_pool",
       "accounts": [
         {
@@ -51,10 +86,6 @@
           "init": true,
           "pda": {
             "seeds": [
-              {
-                "kind": "const",
-                "value": "pool"
-              },
               {
                 "kind": "account",
                 "path": "token0_definition"
@@ -66,6 +97,10 @@
               {
                 "kind": "arg",
                 "path": "owner"
+              },
+              {
+                "kind": "arg",
+                "path": "namespace"
               }
             ]
           }
@@ -117,9 +152,23 @@
           "writable": false,
           "signer": false,
           "init": false
+        },
+        {
+          "name": "config",
+          "writable": false,
+          "signer": false,
+          "init": false
         }
       ],
       "args": [
+        {
+          "name": "defer_funding",
+          "type": "bool"
+        },
+        {
+          "name": "namespace",
+          "type": "account_id"
+        },
         {
           "name": "token0_amount",
           "type": "u128"
@@ -153,6 +202,12 @@
         {
           "name": "owner",
           "type": "account_id"
+        },
+        {
+          "name": "owner_program",
+          "type": {
+            "option": "unknown"
+          }
         },
         {
           "name": "curve_program_id",
@@ -201,12 +256,6 @@
         },
         {
           "name": "participant_token_out_ata",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "treasury_collateral_ata",
           "writable": true,
           "signer": false,
           "init": false
@@ -279,12 +328,6 @@
           "init": false
         },
         {
-          "name": "treasury_collateral_ata",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
           "name": "clock",
           "writable": false,
           "signer": false,
@@ -331,7 +374,7 @@
       "args": []
     },
     {
-      "name": "withdraw_reserves",
+      "name": "activate_pool",
       "accounts": [
         {
           "name": "pool",
@@ -340,7 +383,7 @@
           "init": false
         },
         {
-          "name": "owner",
+          "name": "owner_authority",
           "writable": false,
           "signer": true,
           "init": false
@@ -358,6 +401,18 @@
           "init": false
         },
         {
+          "name": "owner_token0_ata",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "owner_token1_ata",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
           "name": "pool_token0_ata",
           "writable": true,
           "signer": false,
@@ -367,6 +422,36 @@
           "name": "pool_token1_ata",
           "writable": true,
           "signer": false,
+          "init": false
+        },
+        {
+          "name": "clock",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "config",
+          "writable": false,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "withdraw_reserves",
+      "accounts": [
+        {
+          "name": "pool",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "owner",
+          "writable": false,
+          "signer": true,
           "init": false
         },
         {
@@ -382,8 +467,62 @@
           "init": false
         },
         {
+          "name": "pool_token0_ata",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "pool_token1_ata",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
           "name": "clock",
           "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "config",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "treasury_collateral_ata",
+          "writable": true,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "collect_fees",
+      "accounts": [
+        {
+          "name": "pool",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "config",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "pool_collateral_ata",
+          "writable": true,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "treasury_collateral_ata",
+          "writable": true,
           "signer": false,
           "init": false
         }

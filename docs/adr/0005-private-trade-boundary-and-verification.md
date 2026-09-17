@@ -7,7 +7,7 @@ Status: accepted
 LEZ private transactions can prove that a private account authorized a program
 call without revealing that account or its balance to outside observers. The
 bonding curve nevertheless has public sale state: its sale reserve, real and
-virtual reserves, fee transfers, token-account changes and the resulting spot
+virtual reserves, fee accrual and collection, token-account changes and the resulting spot
 price are observable. A buy or sell can therefore reveal, or tightly constrain,
 its effective size through the public state transition.
 

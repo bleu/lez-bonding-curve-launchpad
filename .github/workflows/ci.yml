@@ -25,10 +25,10 @@ jobs:
           cargo fmt --manifest-path methods/guest/Cargo.toml --check
 
       - name: clippy
-        run: cargo clippy --locked -p curve-math -p pool -p curve-core --all-targets
+        run: cargo clippy --locked -p curve-math -p pool -p curve-core -p factory-core -p private-flow-core --all-targets
 
       - name: test
-        run: cargo test --locked -p curve-math -p pool -p curve-core
+        run: cargo test --locked -p curve-math -p pool -p curve-core -p factory-core -p private-flow-core
 
       - name: pins
         run: ./verify/check-pins.sh
