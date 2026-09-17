@@ -147,10 +147,27 @@ impl<'a> FactorySession<'a> {
             let namespace = self.namespace;
             let factory = self.factory.id();
             let curve = self.curve.id();
+            // A closed pool cannot accrue new fees. Collect publicly before the private
+            // stage to keep its call graph within the pinned privacy circuit budget.
+            if self.authority.starts_with("Private/")
+                && state.settlement_stage == SettlementStage::Ready
+            {
+                receipt.transaction_hashes.extend(
+                    collect_pool_fees(
+                        self.wallet,
+                        namespace,
+                        self.curve,
+                        &[(state.pool_id, collateral)],
+                    )
+                    .await?,
+                );
+            }
+            let treasury =
+                prepare_fee_collection(self.wallet, namespace, curve, collateral).await?;
             self.submit(
                 |holder| {
                     Ok(build_withdraw_factory_proceeds_invocation(
-                        namespace, factory, curve, holder, salt, collateral,
+                        namespace, factory, curve, holder, salt, collateral, treasury,
                     ))
                 },
                 &mut receipt,

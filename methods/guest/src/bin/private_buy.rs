@@ -29,13 +29,12 @@ fn main() {
         config,
         pool_collateral_ata,
         pool_token_ata,
-        treasury_collateral_ata,
         clock,
         private_destination,
     ] = pre_states
         .clone()
         .try_into()
-        .expect("PrivateBuy requires exactly thirteen accounts");
+        .expect("PrivateBuy requires exactly twelve accounts");
 
     assert!(
         instruction.gas_reserve > 0,
@@ -106,7 +105,6 @@ fn main() {
                 pool_collateral_ata,
                 pool_token_ata,
                 transient_token_ata.clone(),
-                treasury_collateral_ata,
                 clock,
             ],
             &CurveInstruction::Private {

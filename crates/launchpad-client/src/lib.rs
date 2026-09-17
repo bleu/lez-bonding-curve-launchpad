@@ -132,7 +132,6 @@ pub async fn submit_private_buy(
     private_buy_program: &Program,
     curve_program: &Program,
     factory_program_id: ProgramId,
-    treasury: AccountId,
     request: PrivateBuyRequest,
 ) -> Result<PrivateBuyReceipt> {
     validate_private_buy_request(request)?;
@@ -187,10 +186,6 @@ pub async fn submit_private_buy(
             request.collateral_definition,
         )),
         AccountIdentity::PublicNoSign(associated_token_account(pool, token_definition)),
-        AccountIdentity::PublicNoSign(associated_token_account(
-            treasury,
-            request.collateral_definition,
-        )),
         AccountIdentity::PublicNoSign(clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID),
         destination,
     ];
@@ -424,6 +419,7 @@ pub fn build_withdraw_factory_proceeds_invocation(
     creator: AccountId,
     launch_salt: [u8; 32],
     collateral_definition: AccountId,
+    treasury: AccountId,
 ) -> PublicInvocation<FactoryInstruction> {
     let (factory, token_definition, pool) = factory_pool_addresses(
         namespace,
@@ -432,7 +428,7 @@ pub fn build_withdraw_factory_proceeds_invocation(
         launch_salt,
         collateral_definition,
     );
-    PublicInvocation {
+    let mut invocation = PublicInvocation {
         program_id: factory_program_id,
         account_ids: vec![
             factory,
@@ -447,10 +443,17 @@ pub fn build_withdraw_factory_proceeds_invocation(
             associated_token_account(creator, token_definition),
             associated_token_account(creator, collateral_definition),
             clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID,
+            compute_config_pda(namespace, curve_program_id),
+            associated_token_account(treasury, collateral_definition),
         ],
         signer_accounts: vec![creator],
         instruction: FactoryInstruction::WithdrawFactoryProceeds,
+    };
+    let last = invocation.account_ids.len() - 1;
+    if invocation.account_ids[..last].contains(&invocation.account_ids[last]) {
+        invocation.account_ids.pop();
     }
+    invocation
 }
 
 /// Builds the creator-authorized release of an `OnClose` allocation from factory escrow.
@@ -493,7 +496,6 @@ pub fn build_buy_invocation(
     factory_program_id: ProgramId,
     curve_program_id: ProgramId,
     participant: AccountId,
-    treasury: AccountId,
     request: BuyRequest,
 ) -> PublicInvocation<CurveInstruction> {
     let (_, token_definition, pool) = factory_pool_addresses(
@@ -513,7 +515,6 @@ pub fn build_buy_invocation(
             associated_token_account(pool, request.collateral_definition),
             associated_token_account(pool, token_definition),
             associated_token_account(participant, token_definition),
-            associated_token_account(treasury, request.collateral_definition),
             clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
         signer_accounts: vec![participant],
@@ -535,7 +536,6 @@ pub fn build_buy_with_collateral_invocation(
     factory_program_id: ProgramId,
     curve_program_id: ProgramId,
     participant: AccountId,
-    treasury: AccountId,
     request: BuyWithCollateralRequest,
 ) -> PublicInvocation<CurveInstruction> {
     let (_, token_definition, pool) = factory_pool_addresses(
@@ -555,7 +555,6 @@ pub fn build_buy_with_collateral_invocation(
             associated_token_account(pool, request.collateral_definition),
             associated_token_account(pool, token_definition),
             associated_token_account(participant, token_definition),
-            associated_token_account(treasury, request.collateral_definition),
             clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
         signer_accounts: vec![participant],
@@ -574,7 +573,6 @@ pub fn build_sell_invocation(
     factory_program_id: ProgramId,
     curve_program_id: ProgramId,
     participant: AccountId,
-    treasury: AccountId,
     request: SellRequest,
 ) -> PublicInvocation<CurveInstruction> {
     let (_, token_definition, pool) = factory_pool_addresses(
@@ -594,7 +592,6 @@ pub fn build_sell_invocation(
             associated_token_account(pool, token_definition),
             associated_token_account(pool, request.collateral_definition),
             associated_token_account(participant, request.collateral_definition),
-            associated_token_account(treasury, request.collateral_definition),
             clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID,
         ],
         signer_accounts: vec![participant],
@@ -1022,6 +1019,91 @@ async fn confirm_private_accounts(
         .context("persisting confirmed private authority state")
 }
 
+/// Builds permissionless collection for a pool in the selected namespace.
+#[must_use]
+pub fn build_collect_fees_invocation(
+    namespace: AccountId,
+    curve_program_id: ProgramId,
+    pool: AccountId,
+    collateral: AccountId,
+    treasury: AccountId,
+) -> PublicInvocation<CurveInstruction> {
+    PublicInvocation {
+        program_id: curve_program_id,
+        account_ids: vec![
+            pool,
+            compute_config_pda(namespace, curve_program_id),
+            associated_token_account(pool, collateral),
+            associated_token_account(treasury, collateral),
+        ],
+        signer_accounts: vec![],
+        instruction: CurveInstruction::CollectFees,
+    }
+}
+
+/// Initializes the live treasury ATA before collection. No treasury signature is needed.
+pub async fn prepare_fee_collection(
+    wallet: &WalletCore,
+    namespace: AccountId,
+    curve: ProgramId,
+    collateral: AccountId,
+) -> Result<AccountId> {
+    let config = load_curve_config(namespace, wallet, curve).await?;
+    let ata = associated_token_account(config.treasury, collateral);
+    if wallet.get_account_public(ata).await? == lee_core::account::Account::default() {
+        let program = programs::ata();
+        submit_public_invocation(
+            wallet,
+            &program,
+            PublicInvocation {
+                program_id: program.id(),
+                account_ids: vec![config.treasury, collateral, ata],
+                signer_accounts: vec![],
+                instruction: associated_token_account_core::Instruction::Create {
+                    ata_program_id: program.id(),
+                },
+            },
+        )
+        .await
+        .context("initializing treasury collateral ATA")?;
+    }
+    Ok(config.treasury)
+}
+
+/// Collects the supplied pools sequentially, rejecting any foreign namespace or mint.
+/// Each collection is independently atomic and safe to retry; this is not an atomic batch.
+pub async fn collect_pool_fees(
+    wallet: &WalletCore,
+    namespace: AccountId,
+    curve: &Program,
+    pools: &[(AccountId, AccountId)],
+) -> Result<Vec<HashType>> {
+    let mut hashes = Vec::new();
+    for &(pool, collateral) in pools {
+        let account = wallet.get_account_public(pool).await?;
+        anyhow::ensure!(
+            account.program_owner == curve.id(),
+            "pool belongs to another program"
+        );
+        let state =
+            curve_core::PoolAccount::try_from(&account.data).context("decoding collection pool")?;
+        anyhow::ensure!(
+            state.namespace == namespace && state.token1_definition_id == collateral,
+            "pool does not match selected namespace or collateral"
+        );
+        let treasury = prepare_fee_collection(wallet, namespace, curve.id(), collateral).await?;
+        hashes.push(
+            submit_public_invocation(
+                wallet,
+                curve,
+                build_collect_fees_invocation(namespace, curve.id(), pool, collateral, treasury),
+            )
+            .await?,
+        );
+    }
+    Ok(hashes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{build_create_authority_invocation, build_transfer_authority_invocation};
@@ -1042,6 +1124,50 @@ mod tests {
 
     const FACTORY_PROGRAM_ID: [u32; 8] = [7; 8];
     const CURVE_PROGRAM_ID: [u32; 8] = [6; 8];
+
+    #[test]
+    fn collection_is_unsigned_and_factory_withdrawal_reuses_a_treasury_recipient() {
+        let namespace = AccountId::new([1; 32]);
+        let holder = AccountId::new([2; 32]);
+        let collateral = AccountId::new([3; 32]);
+        let pool = AccountId::new([4; 32]);
+        let collection = super::build_collect_fees_invocation(
+            namespace,
+            CURVE_PROGRAM_ID,
+            pool,
+            collateral,
+            holder,
+        );
+        assert!(collection.signer_accounts.is_empty());
+        assert_eq!(
+            collection.account_ids,
+            vec![
+                pool,
+                curve_core::compute_config_pda(namespace, CURVE_PROGRAM_ID),
+                super::associated_token_account(pool, collateral),
+                super::associated_token_account(holder, collateral)
+            ]
+        );
+        assert_eq!(collection.instruction, curve_core::Instruction::CollectFees);
+        let withdrawal = build_withdraw_factory_proceeds_invocation(
+            namespace,
+            FACTORY_PROGRAM_ID,
+            CURVE_PROGRAM_ID,
+            holder,
+            [5; 32],
+            collateral,
+            holder,
+        );
+        assert_eq!(withdrawal.account_ids.len(), 13);
+        assert_eq!(
+            withdrawal
+                .account_ids
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            13
+        );
+    }
 
     #[test]
     fn private_authority_builder_preserves_action_and_locates_holder() {
@@ -1118,7 +1244,6 @@ mod tests {
                 FACTORY_PROGRAM_ID,
                 CURVE_PROGRAM_ID,
                 AccountId::new([3; 32]),
-                AccountId::new([4; 32]),
                 request,
             )
         };
@@ -1323,13 +1448,11 @@ mod tests {
         let launch_salt = [1; 32];
         let participant = AccountId::new([9; 32]);
         let collateral_definition = AccountId::new([5; 32]);
-        let treasury = AccountId::new([4; 32]);
         let invocation = build_buy_invocation(
             AccountId::new([0xAD; 32]),
             FACTORY_PROGRAM_ID,
             CURVE_PROGRAM_ID,
             participant,
-            treasury,
             BuyRequest {
                 launch_salt,
                 collateral_definition,
@@ -1363,10 +1486,10 @@ mod tests {
         );
         assert_eq!(
             invocation.account_ids[7],
-            super::associated_token_account(treasury, collateral_definition)
+            clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID
         );
         assert_eq!(
-            invocation.account_ids[8],
+            invocation.account_ids[7],
             clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID
         );
         assert!(matches!(
@@ -1384,13 +1507,11 @@ mod tests {
         let launch_salt = [1; 32];
         let participant = AccountId::new([9; 32]);
         let collateral_definition = AccountId::new([5; 32]);
-        let treasury = AccountId::new([4; 32]);
         let invocation = build_buy_with_collateral_invocation(
             AccountId::new([0xAD; 32]),
             FACTORY_PROGRAM_ID,
             CURVE_PROGRAM_ID,
             participant,
-            treasury,
             BuyWithCollateralRequest {
                 launch_salt,
                 collateral_definition,
@@ -1413,7 +1534,7 @@ mod tests {
         );
         assert_eq!(
             invocation.account_ids[7],
-            super::associated_token_account(treasury, collateral_definition)
+            clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID
         );
         assert!(matches!(
             invocation.instruction,
@@ -1430,13 +1551,11 @@ mod tests {
         let launch_salt = [1; 32];
         let participant = AccountId::new([9; 32]);
         let collateral_definition = AccountId::new([5; 32]);
-        let treasury = AccountId::new([4; 32]);
         let invocation = build_sell_invocation(
             AccountId::new([0xAD; 32]),
             FACTORY_PROGRAM_ID,
             CURVE_PROGRAM_ID,
             participant,
-            treasury,
             SellRequest {
                 launch_salt,
                 collateral_definition,
@@ -1459,7 +1578,7 @@ mod tests {
         );
         assert_eq!(
             invocation.account_ids[7],
-            super::associated_token_account(treasury, collateral_definition)
+            clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID
         );
         assert!(matches!(
             invocation.instruction,
@@ -1515,6 +1634,7 @@ mod tests {
             creator,
             launch_salt,
             collateral_definition,
+            AccountId::new([4; 32]),
         );
         let factory =
             compute_factory_pda(AccountId::new([0xAD; 32]), FACTORY_PROGRAM_ID, launch_salt);
@@ -1522,7 +1642,7 @@ mod tests {
             compute_definition_pda(AccountId::new([0xAD; 32]), FACTORY_PROGRAM_ID, launch_salt);
         assert_eq!(invocation.program_id, FACTORY_PROGRAM_ID);
         assert_eq!(invocation.signer_accounts, vec![creator]);
-        assert_eq!(invocation.account_ids.len(), 12);
+        assert_eq!(invocation.account_ids.len(), 14);
         assert_eq!(invocation.account_ids[0], factory);
         assert_eq!(invocation.account_ids[3], definition);
         assert_eq!(

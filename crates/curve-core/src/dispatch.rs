@@ -26,7 +26,7 @@ pub fn process_instruction(
         instruction => (false, instruction),
     };
     let original = pre_states.clone();
-    let (posts, mut calls) = match instruction {
+    let (mut posts, mut calls) = match instruction {
         Instruction::Private { .. } => panic!("nested execution mode wrapper"),
         Instruction::UpdateConfig {
             namespace,
@@ -131,11 +131,10 @@ pub fn process_instruction(
                 pool_token_in_ata,
                 pool_token_out_ata,
                 participant_token_out_ata,
-                treasury_token_in_ata,
                 clock,
             ] = pre_states
                 .try_into()
-                .expect("SwapExactInput requires exactly nine accounts");
+                .expect("SwapExactInput requires exactly eight accounts");
             settle_exact_input(
                 pool,
                 config,
@@ -144,7 +143,6 @@ pub fn process_instruction(
                 pool_token_in_ata,
                 pool_token_out_ata,
                 participant_token_out_ata,
-                treasury_token_in_ata,
                 clock,
                 amount_in,
                 min_amount_out,
@@ -171,11 +169,10 @@ pub fn process_instruction(
                 pool_token_in_ata,
                 pool_token_out_ata,
                 participant_token_out_ata,
-                treasury_token_in_ata,
                 clock,
             ] = pre_states
                 .try_into()
-                .expect("SwapExactOutput requires exactly nine accounts");
+                .expect("SwapExactOutput requires exactly eight accounts");
             settle_exact_output(
                 pool,
                 config,
@@ -184,7 +181,6 @@ pub fn process_instruction(
                 pool_token_in_ata,
                 pool_token_out_ata,
                 participant_token_out_ata,
-                treasury_token_in_ata,
                 clock,
                 amount_out,
                 max_amount_in,
@@ -192,7 +188,15 @@ pub fn process_instruction(
                 self_program_id,
             )
         }
+        Instruction::CollectFees => collect_fees(pre_states, self_program_id),
         Instruction::WithdrawReserves => {
+            // The runtime requires unique account IDs. Omit the trailing treasury
+            // ATA when it is already the owner's token1 recipient.
+            let mut pre_states = pre_states;
+            if pre_states.len() == 8 {
+                pre_states.push(pre_states[3].clone());
+            }
+
             let [
                 pool,
                 owner,
@@ -201,9 +205,11 @@ pub fn process_instruction(
                 pool_token0_ata,
                 pool_token1_ata,
                 clock,
+                config,
+                treasury_ata,
             ] = pre_states
                 .try_into()
-                .expect("WithdrawReserves requires exactly seven accounts");
+                .expect("WithdrawReserves requires exactly nine accounts");
             settle_withdrawal(
                 pool,
                 owner,
@@ -212,10 +218,13 @@ pub fn process_instruction(
                 pool_token0_ata,
                 pool_token1_ata,
                 clock,
+                config,
+                treasury_ata,
                 self_program_id,
             )
         }
     };
+    posts.truncate(original.len());
     if !private {
         use_public_authorizations(&original, &mut calls, self_program_id);
     }
@@ -234,6 +243,8 @@ fn settle_withdrawal(
     pool_token0_ata: AccountWithMetadata,
     pool_token1_ata: AccountWithMetadata,
     clock: AccountWithMetadata,
+    config: AccountWithMetadata,
+    treasury_ata: AccountWithMetadata,
     curve_program_id: ProgramId,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     let mut complete_posts = vec![
@@ -244,9 +255,27 @@ fn settle_withdrawal(
         AccountPostState::new(pool_token0_ata.account.clone()),
         AccountPostState::new(pool_token1_ata.account.clone()),
         AccountPostState::new(clock.account.clone()),
+        AccountPostState::new(config.account.clone()),
+        AccountPostState::new(treasury_ata.account.clone()),
     ];
     let pool_state =
         PoolAccount::try_from(&pool.account.data).expect("Pool account holds valid data");
+    verify_vaults(
+        &pool_state,
+        &pool_token0_ata,
+        &pool_token1_ata,
+        pool_state.token0_definition_id,
+    );
+    let treasury_is_owner = treasury_ata.account_id == owner_token1_ata.account_id;
+    let (fee_posts, fee_calls) = collect_fees(
+        vec![pool.clone(), config, pool_token1_ata.clone(), treasury_ata],
+        curve_program_id,
+    );
+    let collected = pool_state.pool.fees_accrued;
+    let pool = AccountWithMetadata {
+        account: fee_posts[0].account().clone(),
+        ..pool
+    };
     let (posts, reserves) = withdraw_reserves(pool.clone(), owner.clone(), clock, curve_program_id);
     let authority = AccountWithMetadata {
         account: posts[0].account().clone(),
@@ -285,7 +314,20 @@ fn settle_withdrawal(
         pool_state.token1_definition_id,
         pool_state.owner,
     )];
-    let mut calls = Vec::new();
+    let mut calls = fee_calls;
+    for call in &mut calls {
+        call.pre_states[0].account = signer.account.clone();
+    }
+    let pool_token1_ata = if collected == 0 {
+        pool_token1_ata
+    } else {
+        debited(pool_token1_ata, collected)
+    };
+    let owner_token1_ata = if treasury_is_owner && collected != 0 {
+        credited(owner_token1_ata, collected)
+    } else {
+        owner_token1_ata
+    };
     if reserves.token0_amount != 0 {
         calls.push(
             ata_transfer(
@@ -324,7 +366,6 @@ fn settle_exact_input(
     pool_token_in_ata: AccountWithMetadata,
     pool_token_out_ata: AccountWithMetadata,
     participant_token_out_ata: AccountWithMetadata,
-    treasury_token_in_ata: AccountWithMetadata,
     clock: AccountWithMetadata,
     amount_in: u128,
     min_amount_out: u128,
@@ -339,7 +380,6 @@ fn settle_exact_input(
         AccountPostState::new(pool_token_in_ata.account.clone()),
         AccountPostState::new(pool_token_out_ata.account.clone()),
         AccountPostState::new(participant_token_out_ata.account.clone()),
-        AccountPostState::new(treasury_token_in_ata.account.clone()),
         AccountPostState::new(clock.account.clone()),
     ];
     assert!(
@@ -387,36 +427,18 @@ fn settle_exact_input(
         settlement.token_out,
         ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID,
     );
-    let treasury = AccountWithMetadata {
-        account: Account::default(),
-        is_authorized: false,
-        account_id: settlement.treasury,
-    };
-    associated_token_account_core::verify_ata_and_get_seed(
-        &treasury_token_in_ata,
-        &treasury,
-        if settlement.protocol_fee_on_output {
-            settlement.token_out
-        } else {
-            settlement.token_in
-        },
-        ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID,
+    verify_vaults(
+        &pool_state,
+        &pool_token_in_ata,
+        &pool_token_out_ata,
+        token_in,
     );
-
     let mut calls = vec![ata_transfer(
-        participant.clone(),
-        participant_token_in_ata.clone(),
+        participant,
+        participant_token_in_ata,
         pool_token_in_ata,
-        settlement.effective_amount_in,
+        settlement.amount_in,
     )];
-    if settlement.protocol_fee != 0 && !settlement.protocol_fee_on_output {
-        calls.push(ata_transfer(
-            participant,
-            debited(participant_token_in_ata, settlement.effective_amount_in),
-            treasury_token_in_ata.clone(),
-            settlement.protocol_fee,
-        ));
-    }
     let mut pool_signer = pool_authority;
     pool_signer.is_authorized = true;
     calls.push(
@@ -433,22 +455,6 @@ fn settle_exact_input(
             pool_state.owner,
         )]),
     );
-    if settlement.protocol_fee != 0 && settlement.protocol_fee_on_output {
-        calls.push(
-            ata_transfer(
-                pool_signer,
-                debited(pool_token_out_ata, settlement.amount_out),
-                treasury_token_in_ata,
-                settlement.protocol_fee,
-            )
-            .with_pda_seeds(vec![compute_pool_pda_seed(
-                pool_state.namespace,
-                pool_state.token0_definition_id,
-                pool_state.token1_definition_id,
-                pool_state.owner,
-            )]),
-        );
-    }
     complete_posts[0] = posts[0].clone();
     (complete_posts, calls)
 }
@@ -465,7 +471,6 @@ fn settle_exact_output(
     pool_token_in_ata: AccountWithMetadata,
     pool_token_out_ata: AccountWithMetadata,
     participant_token_out_ata: AccountWithMetadata,
-    treasury_token_in_ata: AccountWithMetadata,
     clock: AccountWithMetadata,
     amount_out: u128,
     max_amount_in: u128,
@@ -480,7 +485,6 @@ fn settle_exact_output(
         AccountPostState::new(pool_token_in_ata.account.clone()),
         AccountPostState::new(pool_token_out_ata.account.clone()),
         AccountPostState::new(participant_token_out_ata.account.clone()),
-        AccountPostState::new(treasury_token_in_ata.account.clone()),
         AccountPostState::new(clock.account.clone()),
     ];
     assert!(
@@ -527,35 +531,18 @@ fn settle_exact_output(
         settlement.token_out,
         ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID,
     );
-    let treasury = AccountWithMetadata {
-        account: Account::default(),
-        is_authorized: false,
-        account_id: settlement.treasury,
-    };
-    associated_token_account_core::verify_ata_and_get_seed(
-        &treasury_token_in_ata,
-        &treasury,
-        if settlement.protocol_fee_on_output {
-            settlement.token_out
-        } else {
-            settlement.token_in
-        },
-        ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID,
+    verify_vaults(
+        &pool_state,
+        &pool_token_in_ata,
+        &pool_token_out_ata,
+        token_in,
     );
     let mut calls = vec![ata_transfer(
-        participant.clone(),
-        participant_token_in_ata.clone(),
+        participant,
+        participant_token_in_ata,
         pool_token_in_ata,
-        settlement.effective_amount_in,
+        settlement.amount_in,
     )];
-    if settlement.protocol_fee != 0 && !settlement.protocol_fee_on_output {
-        calls.push(ata_transfer(
-            participant,
-            debited(participant_token_in_ata, settlement.effective_amount_in),
-            treasury_token_in_ata.clone(),
-            settlement.protocol_fee,
-        ));
-    }
     let mut pool_signer = pool_authority;
     pool_signer.is_authorized = true;
     calls.push(
@@ -572,22 +559,6 @@ fn settle_exact_output(
             pool_state.owner,
         )]),
     );
-    if settlement.protocol_fee != 0 && settlement.protocol_fee_on_output {
-        calls.push(
-            ata_transfer(
-                pool_signer,
-                debited(pool_token_out_ata, settlement.amount_out),
-                treasury_token_in_ata,
-                settlement.protocol_fee,
-            )
-            .with_pda_seeds(vec![compute_pool_pda_seed(
-                pool_state.namespace,
-                pool_state.token0_definition_id,
-                pool_state.token1_definition_id,
-                pool_state.owner,
-            )]),
-        );
-    }
     complete_posts[0] = posts[0].clone();
     (complete_posts, calls)
 }
@@ -606,6 +577,17 @@ fn ata_transfer(
             amount,
         },
     )
+}
+
+fn credited(mut holding: AccountWithMetadata, amount: u128) -> AccountWithMetadata {
+    let mut token =
+        token_core::TokenHolding::try_from(&holding.account.data).expect("valid token holding");
+    let token_core::TokenHolding::Fungible { balance, .. } = &mut token else {
+        panic!("pool tokens must be fungible")
+    };
+    *balance = balance.checked_add(amount).expect("token balance overflow");
+    holding.account.data = lee_core::account::Data::from(&token);
+    holding
 }
 
 fn debited(mut holding: AccountWithMetadata, amount: u128) -> AccountWithMetadata {
@@ -641,4 +623,102 @@ pub fn use_public_authorizations(
                 });
         }
     }
+}
+
+/// Checks physical custody against independent reserve and fee liabilities.
+fn verify_vaults(
+    state: &PoolAccount,
+    input: &AccountWithMetadata,
+    output: &AccountWithMetadata,
+    token_in: lee_core::account::AccountId,
+) {
+    let (token0, token1) = if token_in == state.token0_definition_id {
+        (input, output)
+    } else {
+        (output, input)
+    };
+    assert!(
+        balance(token0) >= state.pool.real_reserve0,
+        "Token0 vault is underfunded"
+    );
+    assert!(
+        balance(token1)
+            >= state
+                .pool
+                .real_reserve1
+                .checked_add(state.pool.fees_accrued)
+                .expect("collateral liabilities overflow"),
+        "Collateral vault cannot cover reserves and accrued fees"
+    );
+}
+fn balance(account: &AccountWithMetadata) -> u128 {
+    assert_eq!(
+        account.account.program_owner,
+        crate::authority::TOKEN_PROGRAM_ID,
+        "Invalid vault token program"
+    );
+    match token_core::TokenHolding::try_from(&account.account.data).expect("valid fungible vault") {
+        token_core::TokenHolding::Fungible { balance, .. } => balance,
+        _ => panic!("pool tokens must be fungible"),
+    }
+}
+fn collect_fees(
+    pre: Vec<AccountWithMetadata>,
+    program: ProgramId,
+) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
+    let [pool, config, vault, treasury_ata]: [AccountWithMetadata; 4] =
+        pre.try_into().expect("CollectFees requires four accounts");
+    let mut state = crate::pool_swap::validated_pool(&pool, program);
+    let config_data = crate::pool_swap::validated_config(&config, state.namespace, program);
+    let treasury = AccountWithMetadata {
+        account_id: config_data.treasury,
+        account: Account::default(),
+        is_authorized: false,
+    };
+    for (ata, owner) in [(&vault, &pool), (&treasury_ata, &treasury)] {
+        associated_token_account_core::verify_ata_and_get_seed(
+            ata,
+            owner,
+            state.token1_definition_id,
+            ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID,
+        );
+    }
+    assert!(
+        balance(&vault)
+            >= state
+                .pool
+                .real_reserve1
+                .checked_add(state.pool.fees_accrued)
+                .expect("collateral liabilities overflow"),
+        "Collateral vault cannot cover reserves and accrued fees"
+    );
+    let amount = state.pool.collect_fees().expect("collected fees overflow");
+    let mut post = pool.account.clone();
+    post.data = (&state).into();
+    let signer = AccountWithMetadata {
+        account: post.clone(),
+        is_authorized: true,
+        ..pool
+    };
+    let posts = vec![
+        AccountPostState::new(post),
+        AccountPostState::new(config.account),
+        AccountPostState::new(vault.account.clone()),
+        AccountPostState::new(treasury_ata.account.clone()),
+    ];
+    let calls = if amount == 0 {
+        vec![]
+    } else {
+        vec![
+            ata_transfer(signer, vault, treasury_ata, amount).with_pda_seeds(vec![
+                compute_pool_pda_seed(
+                    state.namespace,
+                    state.token0_definition_id,
+                    state.token1_definition_id,
+                    state.owner,
+                ),
+            ]),
+        ]
+    };
+    (posts, calls)
 }

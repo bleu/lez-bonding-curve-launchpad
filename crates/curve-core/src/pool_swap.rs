@@ -127,7 +127,14 @@ pub fn validated_config(
     Config::try_from(&config.account.data).expect("Config account holds invalid data")
 }
 
-fn validated_pool(pool: &AccountWithMetadata, curve_program_id: ProgramId) -> PoolAccount {
+pub(crate) fn validated_pool(
+    pool: &AccountWithMetadata,
+    curve_program_id: ProgramId,
+) -> PoolAccount {
+    assert_eq!(
+        pool.account.program_owner, curve_program_id,
+        "Pool owner does not match program"
+    );
     let pool_account =
         PoolAccount::try_from(&pool.account.data).expect("Pool account holds invalid data");
     assert!(pool_account.funded, "Pool funding is pending");

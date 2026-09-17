@@ -57,6 +57,10 @@ pub struct Pool {
     pub k: u128,
     pub real_reserve0: u128,
     pub real_reserve1: u128,
+    /// Uncollected token1 fees, excluded from real and virtual reserves.
+    pub fees_accrued: u128,
+    /// Cumulative token1 fees paid to treasury.
+    pub fees_collected: u128,
     pub close_timestamp: Option<u64>,
     pub close_on_depletion: Option<TokenSide>,
     pub lifecycle: PoolLifecycle,
@@ -86,7 +90,7 @@ pub struct SwapOutcome {
     pub raw_amount_out: u128,
     /// Amount received by the trader after a possible sell-side protocol fee.
     pub amount_out: u128,
-    /// Fee transferred atomically to the collateral treasury.
+    /// Fee accrued in the collateral vault for later collection.
     pub protocol_fee: u128,
     /// Buys charge the collateral input; sells charge the collateral output.
     pub protocol_fee_on_output: bool,
@@ -177,6 +181,8 @@ impl Pool {
             k,
             real_reserve0: token0_amount,
             real_reserve1: token1_amount,
+            fees_accrued: 0,
+            fees_collected: 0,
             close_timestamp,
             close_on_depletion,
             lifecycle: PoolLifecycle::Open,
@@ -245,6 +251,23 @@ impl Pool {
         let new_virtual_out = virtual_out
             .checked_sub(amount_out)
             .ok_or(SwapError::Arithmetic)?;
+        let fees_accrued = self
+            .fees_accrued
+            .checked_add(protocol_fee)
+            .ok_or(SwapError::Arithmetic)?;
+        self.fees_collected
+            .checked_add(fees_accrued)
+            .ok_or(SwapError::Arithmetic)?;
+        // Check vault accounting before mutating any state.
+        let collateral_reserve = if token_in == TokenSide::Token1 {
+            real_in.checked_add(effective_input)
+        } else {
+            real_out.checked_sub(amount_out)
+        }
+        .ok_or(SwapError::Arithmetic)?;
+        collateral_reserve
+            .checked_add(fees_accrued)
+            .ok_or(SwapError::Arithmetic)?;
         self.set_reserves(
             token_in,
             new_virtual_in,
@@ -256,6 +279,7 @@ impl Pool {
                 .checked_sub(amount_out)
                 .ok_or(SwapError::Arithmetic)?,
         );
+        self.fees_accrued = fees_accrued;
         self.close_if_depleted();
         Ok(SwapOutcome {
             amount_in,
@@ -322,6 +346,23 @@ impl Pool {
         let new_virtual_out = virtual_out
             .checked_sub(amount_out)
             .ok_or(SwapError::Arithmetic)?;
+        let fees_accrued = self
+            .fees_accrued
+            .checked_add(protocol_fee)
+            .ok_or(SwapError::Arithmetic)?;
+        self.fees_collected
+            .checked_add(fees_accrued)
+            .ok_or(SwapError::Arithmetic)?;
+        // Check vault accounting before mutating any state.
+        let collateral_reserve = if token_in == TokenSide::Token1 {
+            real_in.checked_add(effective_input)
+        } else {
+            real_out.checked_sub(amount_out)
+        }
+        .ok_or(SwapError::Arithmetic)?;
+        collateral_reserve
+            .checked_add(fees_accrued)
+            .ok_or(SwapError::Arithmetic)?;
         self.set_reserves(
             token_in,
             new_virtual_in,
@@ -333,6 +374,7 @@ impl Pool {
                 .checked_sub(amount_out)
                 .ok_or(SwapError::Arithmetic)?,
         );
+        self.fees_accrued = fees_accrued;
         self.close_if_depleted();
         Ok(SwapOutcome {
             amount_in,
@@ -342,6 +384,18 @@ impl Pool {
             protocol_fee,
             protocol_fee_on_output: false,
         })
+    }
+
+    /// Permissionless and idempotent; neither pricing nor lifecycle changes.
+    pub fn collect_fees(&mut self) -> Result<u128, SwapError> {
+        let amount = self.fees_accrued;
+        let total = self
+            .fees_collected
+            .checked_add(amount)
+            .ok_or(SwapError::Arithmetic)?;
+        self.fees_collected = total;
+        self.fees_accrued = 0;
+        Ok(amount)
     }
 
     pub fn close_pool(&mut self, now: u64) -> Result<(), CloseError> {

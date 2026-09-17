@@ -91,6 +91,8 @@ enum Command {
     Price(PriceArgs),
     Status(LaunchReadArgs),
     SaleInfo(LaunchReadArgs),
+    /// Collect one or more pools in this namespace (sequential, resumable).
+    CollectFees(CollectFeesArgs),
     Configure(ConfigArgs),
     CreateAuthority(CreateAuthorityArgs),
     TransferAuthority(TransferAuthorityArgs),
@@ -242,6 +244,16 @@ struct FactoryLifecycleArgs {
 }
 
 #[derive(Debug, Args)]
+struct CollectFeesArgs {
+    #[arg(long, required = true, num_args = 1..)]
+    pool: Vec<String>,
+    #[arg(long)]
+    collateral_definition: String,
+    #[arg(long)]
+    curve_program_path: PathBuf,
+}
+
+#[derive(Debug, Args)]
 struct LaunchReadArgs {
     #[command(flatten)]
     launch: LaunchArgs,
@@ -323,6 +335,8 @@ struct SaleSnapshot {
     tokens_sold: u128,
     real_token_reserve: u128,
     real_collateral_reserve: u128,
+    fees_accrued: u128,
+    fees_collected: u128,
     virtual_token_reserve: u128,
     virtual_collateral_reserve: u128,
     close_timestamp: Option<u64>,
@@ -404,6 +418,23 @@ async fn run(json: bool, cli: Cli) -> Result<()> {
     match cli.command {
         Command::CreateSale(args) => create_sale(namespace, json, args, router).await,
         Command::Close(args) => close_factory_pool(namespace, json, args, router).await,
+        Command::CollectFees(args) => {
+            let wallet = WalletCore::from_env()?;
+            let curve = load_program(&args.curve_program_path)?;
+            let collateral = parse_account_id(&args.collateral_definition)?;
+            let pools = args
+                .pool
+                .iter()
+                .map(|p| Ok((parse_account_id(p)?, collateral)))
+                .collect::<Result<Vec<_>>>()?;
+            let hashes =
+                launchpad_client::collect_pool_fees(&wallet, namespace, &curve, &pools).await?;
+            println!(
+                "{}",
+                serde_json::json!({"transaction_hashes": hashes.into_iter().map(hex::encode).collect::<Vec<_>>()})
+            );
+            Ok(())
+        }
         Command::Withdraw(args) => withdraw_factory_proceeds(namespace, json, args, router).await,
         Command::Claim(args) => claim_creator_allocation(namespace, json, args, router).await,
         Command::Buy(args) => buy(namespace, json, args).await,
@@ -679,6 +710,8 @@ async fn sale_snapshot(namespace: lee::AccountId, json: bool, args: LaunchReadAr
         tokens_sold,
         real_token_reserve: pool.as_ref().map_or(0, |p| p.real_reserve0),
         real_collateral_reserve: pool.as_ref().map_or(0, |p| p.real_reserve1),
+        fees_accrued: pool.as_ref().map_or(0, |p| p.fees_accrued),
+        fees_collected: pool.as_ref().map_or(0, |p| p.fees_collected),
         virtual_token_reserve: pool
             .as_ref()
             .map_or(factory.virtual_token_reserve, |p| p.virtual_reserve0),
@@ -693,7 +726,7 @@ async fn sale_snapshot(namespace: lee::AccountId, json: bool, args: LaunchReadAr
         println!("{}", serde_json::to_string(&snapshot)?);
     } else {
         println!(
-            "sale {status}: namespace={} fee_bps={} treasury={} pool={} sold={}/{} token_reserve={} collateral_reserve={}",
+            "sale {status}: namespace={} fee_bps={} treasury={} pool={} sold={}/{} token_reserve={} collateral_reserve={} fees_accrued={} fees_collected={}",
             snapshot.namespace,
             snapshot.protocol_fee_bps,
             snapshot.treasury,
@@ -701,7 +734,9 @@ async fn sale_snapshot(namespace: lee::AccountId, json: bool, args: LaunchReadAr
             snapshot.tokens_sold,
             snapshot.sale_quantity,
             snapshot.real_token_reserve,
-            snapshot.real_collateral_reserve
+            snapshot.real_collateral_reserve,
+            snapshot.fees_accrued,
+            snapshot.fees_collected
         );
     }
     Ok(())
@@ -739,7 +774,6 @@ async fn buy(namespace: lee::AccountId, json: bool, args: BuyArgs) -> Result<()>
         factory_program.id(),
         curve_program.id(),
         participant,
-        config.treasury,
         BuyRequest {
             launch_salt: args.trade.launch.launch_salt,
             collateral_definition,
@@ -789,7 +823,6 @@ async fn buy_with_collateral(
         factory_program.id(),
         curve_program.id(),
         participant,
-        config.treasury,
         BuyWithCollateralRequest {
             launch_salt: args.trade.launch.launch_salt,
             collateral_definition,
@@ -814,14 +847,12 @@ async fn private_buy(namespace: lee::AccountId, args: PrivateBuyArgs) -> Result<
     let from_private = parse_account_id(&args.from_private)?;
     let to_private = parse_account_id(&args.to_private)?;
     let mut wallet = WalletCore::from_env().context("opening the project wallet")?;
-    let config = load_curve_config(namespace, &wallet, curve_program.id()).await?;
     let receipt = submit_private_buy(
         namespace,
         &mut wallet,
         &private_buy_program,
         &curve_program,
         factory_program.id(),
-        config.treasury,
         PrivateBuyRequest {
             launch_salt: args.launch.launch_salt,
             collateral_definition,
@@ -874,7 +905,6 @@ async fn sell(namespace: lee::AccountId, json: bool, args: SellArgs) -> Result<(
         factory_program.id(),
         curve_program.id(),
         participant,
-        config.treasury,
         SellRequest {
             launch_salt: args.trade.launch.launch_salt,
             collateral_definition,

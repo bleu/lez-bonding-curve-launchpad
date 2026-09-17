@@ -66,12 +66,6 @@
           "init": false
         },
         {
-          "name": "treasury_collateral_ata",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
           "name": "clock",
           "writable": false,
           "signer": false,

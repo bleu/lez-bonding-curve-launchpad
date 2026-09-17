@@ -25,7 +25,7 @@ use crate::{
 const NAMESPACE_CREATOR: AccountId = AccountId::new([0xAD; 32]);
 const CURVE_PROGRAM_ID: ProgramId = [7; 8];
 const ATA_PROGRAM_ID: ProgramId = ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID;
-const TOKEN_PROGRAM_ID: ProgramId = [9; 8];
+const TOKEN_PROGRAM_ID: ProgramId = crate::authority::TOKEN_PROGRAM_ID;
 
 fn uninitialized_config() -> AccountWithMetadata {
     AccountWithMetadata {
@@ -852,7 +852,7 @@ fn withdraw_dispatch_transfers_both_real_reserves_and_retires_the_pool() {
         token1,
         owner,
     );
-    let pool = AccountWithMetadata {
+    let mut pool = AccountWithMetadata {
         account: Account {
             program_owner: CURVE_PROGRAM_ID,
             data: Data::from(&PoolAccount {
@@ -869,8 +869,11 @@ fn withdraw_dispatch_transfers_both_real_reserves_and_retires_the_pool() {
         is_authorized: false,
         account_id: pool_id,
     };
+    let mut state = PoolAccount::try_from(&pool.account.data).unwrap();
+    state.pool.fees_accrued = 3;
+    pool.account.data = Data::from(&state);
     let pool_token0 = holding_ata(pool_id, token0, 800);
-    let pool_token1 = holding_ata(pool_id, token1, 100);
+    let pool_token1 = holding_ata(pool_id, token1, 103);
     let owner_token0 = holding_ata(owner, token0, 0);
     let owner_token1 = holding_ata(owner, token1, 0);
 
@@ -882,6 +885,8 @@ fn withdraw_dispatch_transfers_both_real_reserves_and_retires_the_pool() {
         pool_token0.clone(),
         pool_token1.clone(),
         trusted_clock(42),
+        initialized_config(new_admin()),
+        holding_ata(new_treasury(), token1, 0),
     ];
     let mut pending = pre.clone();
     let mut pending_state = PoolAccount::try_from(&pending[0].account.data).unwrap();
@@ -911,7 +916,7 @@ fn withdraw_dispatch_transfers_both_real_reserves_and_retires_the_pool() {
         }
     }
 
-    let [post, ..]: [_; 7] = posts
+    let [post, ..]: [_; 9] = posts
         .try_into()
         .expect("only the pool state changes directly");
     let retired = PoolAccount::try_from(&post.account().data).expect("valid pool state");
@@ -920,7 +925,15 @@ fn withdraw_dispatch_transfers_both_real_reserves_and_retires_the_pool() {
         (retired.pool.real_reserve0, retired.pool.real_reserve1),
         (0, 0)
     );
-    assert_eq!(calls.len(), 2, "one transfer for each reserve");
+    assert_eq!(retired.pool.fees_accrued, 0);
+    assert_eq!(retired.pool.fees_collected, 3);
+    assert_eq!(calls.len(), 3, "fee collection and both reserves");
+    let TokenHolding::Fungible { balance, .. } =
+        TokenHolding::try_from(&calls[2].pre_states[1].account.data).unwrap()
+    else {
+        panic!("fungible")
+    };
+    assert_eq!(balance, 100, "principal transfer sees the fee debit");
     let transfers: Vec<(AccountId, AccountId, AccountId, u128)> = calls
         .iter()
         .map(|call| {
@@ -940,6 +953,7 @@ fn withdraw_dispatch_transfers_both_real_reserves_and_retires_the_pool() {
     assert_eq!(
         transfers,
         vec![
+            (pool_id, pool_token1.account_id, pre[8].account_id, 3),
             (
                 pool_id,
                 pool_token0.account_id,
@@ -1011,7 +1025,7 @@ fn exact_input_sell_charges_the_protocol_fee_in_collateral() {
 }
 
 #[test]
-fn token0_to_token1_exact_input_settles_all_three_transfers() {
+fn token0_to_token1_exact_input_accrues_fee_with_two_transfers() {
     let owner = AccountId::new([3; 32]);
     let participant = AccountId::new([4; 32]);
     let token0 = AccountId::new([1; 32]);
@@ -1044,7 +1058,6 @@ fn token0_to_token1_exact_input_settles_all_three_transfers() {
     let participant_token1 = holding_ata(participant, token1, 0);
     let pool_token0 = holding_ata(pool_id, token0, 800);
     let pool_token1 = holding_ata(pool_id, token1, 100);
-    let treasury_token1 = ata(new_treasury(), token1, Account::default());
 
     let pre = vec![
         pool,
@@ -1054,7 +1067,6 @@ fn token0_to_token1_exact_input_settles_all_three_transfers() {
         pool_token0.clone(),
         pool_token1.clone(),
         participant_token1.clone(),
-        treasury_token1.clone(),
         trusted_clock(41),
     ];
     let mut pending = pre.clone();
@@ -1096,7 +1108,7 @@ fn token0_to_token1_exact_input_settles_all_three_transfers() {
         }
     }
 
-    let [post, ..]: [_; 9] = posts
+    let [post, ..]: [_; 8] = posts
         .try_into()
         .expect("only the pool state changes directly");
     let updated = PoolAccount::try_from(&post.account().data).expect("valid pool state");
@@ -1104,16 +1116,17 @@ fn token0_to_token1_exact_input_settles_all_three_transfers() {
         (updated.pool.real_reserve0, updated.pool.real_reserve1),
         (1050, 80)
     );
-    assert_eq!(calls.len(), 3, "input, protocol fee, and output transfers");
+    assert_eq!(updated.pool.fees_accrued, 1);
+    assert_eq!(calls.len(), 2, "input and net output transfers");
     for call in &calls {
         assert_eq!(call.program_id, ATA_PROGRAM_ID);
     }
     assert!(
-        calls[2].pre_states[0].is_authorized,
+        calls[1].pre_states[0].is_authorized,
         "the pool must authorize the output transfer"
     );
     assert_eq!(
-        calls[2].pda_seeds,
+        calls[1].pda_seeds,
         vec![crate::compute_pool_pda_seed(
             AccountId::new([0xAD; 32]),
             token0,
@@ -1152,12 +1165,6 @@ fn token0_to_token1_exact_input_settles_all_three_transfers() {
                 pool_token1.account_id,
                 participant_token1.account_id,
                 19
-            ),
-            (
-                pool_id,
-                pool_token1.account_id,
-                treasury_token1.account_id,
-                1
             ),
         ]
     );
@@ -1254,7 +1261,6 @@ fn exact_output_dispatch_settles_fee_inclusive_input_and_requested_output_atomic
     let participant_token1 = holding_ata(participant, token1, 1_000);
     let pool_token0 = holding_ata(pool_id, token0, 800);
     let pool_token1 = holding_ata(pool_id, token1, 100);
-    let treasury_token1 = ata(new_treasury(), token1, Account::default());
     let config = AccountWithMetadata {
         account: Account {
             program_owner: CURVE_PROGRAM_ID,
@@ -1277,7 +1283,6 @@ fn exact_output_dispatch_settles_fee_inclusive_input_and_requested_output_atomic
         pool_token1.clone(),
         pool_token0.clone(),
         participant_token0.clone(),
-        treasury_token1,
         trusted_clock(41),
     ];
     let mut pending = pre.clone();
@@ -1319,7 +1324,7 @@ fn exact_output_dispatch_settles_fee_inclusive_input_and_requested_output_atomic
         }
     }
 
-    let [post, ..]: [_; 9] = posts
+    let [post, ..]: [_; 8] = posts
         .try_into()
         .expect("only the pool state changes directly");
     let updated = PoolAccount::try_from(&post.account().data).expect("valid pool state");
@@ -1329,8 +1334,8 @@ fn exact_output_dispatch_settles_fee_inclusive_input_and_requested_output_atomic
     );
     assert_eq!(
         calls.len(),
-        3,
-        "effective collateral, protocol fee, and requested output transfers"
+        2,
+        "gross collateral and requested output transfers"
     );
     let amounts: Vec<u128> = calls
         .iter()
@@ -1343,22 +1348,18 @@ fn exact_output_dispatch_settles_fee_inclusive_input_and_requested_output_atomic
             amount
         })
         .collect();
-    assert_eq!(amounts, vec![25, 3, 200]);
+    assert_eq!(updated.pool.fees_accrued, 3);
+    assert_eq!(amounts, vec![28, 200]);
     assert_eq!(calls[0].pre_states[0].account_id, participant);
     assert_eq!(
         calls[0].pre_states[1].account_id,
         participant_token1.account_id
     );
     assert_eq!(calls[0].pre_states[2].account_id, pool_token1.account_id);
-    assert_eq!(calls[1].pre_states[0].account_id, participant);
+    assert_eq!(calls[1].pre_states[0].account_id, pool_id);
+    assert_eq!(calls[1].pre_states[1].account_id, pool_token0.account_id);
     assert_eq!(
-        calls[1].pre_states[1].account_id,
-        participant_token1.account_id
-    );
-    assert_eq!(calls[2].pre_states[0].account_id, pool_id);
-    assert_eq!(calls[2].pre_states[1].account_id, pool_token0.account_id);
-    assert_eq!(
-        calls[2].pre_states[2].account_id,
+        calls[1].pre_states[2].account_id,
         participant_token0.account_id
     );
 }
@@ -1725,7 +1726,7 @@ fn execution_fee_update_respects_buy_and_sell_slippage() {
 }
 
 #[test]
-fn swaps_reject_foreign_reserve_and_treasury_accounts() {
+fn swaps_reject_foreign_reserve_accounts() {
     let namespace = AccountId::new([51; 32]);
     let other = AccountId::new([52; 32]);
     let pool = namespace_pool(namespace);
@@ -1742,7 +1743,6 @@ fn swaps_reject_foreign_reserve_and_treasury_accounts() {
         holding_ata(pool.account_id, collateral, 100),
         holding_ata(pool.account_id, token, 800),
         holding_ata(trader, token, 0),
-        ata(new_treasury(), collateral, Account::default()),
         trusted_clock(1),
     ];
     let instruction = Instruction::SwapExactInput {
@@ -1751,14 +1751,10 @@ fn swaps_reject_foreign_reserve_and_treasury_accounts() {
         token_in: collateral,
     };
     let (_, calls) = process_instruction(valid.clone(), instruction.clone(), CURVE_PROGRAM_ID);
-    assert_eq!(calls.len(), 3);
+    assert_eq!(calls.len(), 2);
     for (index, foreign) in [
         (4, holding_ata(foreign_pool.account_id, collateral, 100)),
         (5, holding_ata(foreign_pool.account_id, token, 800)),
-        (
-            7,
-            ata(AccountId::new([62; 32]), collateral, Account::default()),
-        ),
     ] {
         let mut invalid = valid.clone();
         invalid[index] = foreign;
@@ -1942,5 +1938,104 @@ fn pool_close_rights_follow_the_owner_nft() {
             .pool
             .effective_lifecycle(1),
         pool::PoolLifecycle::Closed
+    );
+}
+
+#[test]
+fn permissionless_collection_uses_live_treasury_and_preserves_principal() {
+    let namespace = AccountId::new([51; 32]);
+    let treasury = AccountId::new([64; 32]);
+    let mut pool = namespace_pool(namespace);
+    let mut state = PoolAccount::try_from(&pool.account.data).unwrap();
+    state.pool.fees_accrued = 7;
+    pool.account.data = Data::from(&state);
+    let collateral = state.token1_definition_id;
+    let pre = vec![
+        pool.clone(),
+        namespace_config(namespace, 999, treasury),
+        holding_ata(
+            pool.account_id,
+            collateral,
+            state.pool.real_reserve1 + 7 + 11,
+        ),
+        holding_ata(treasury, collateral, 0),
+    ];
+    assert!(pre.iter().all(|a| !a.is_authorized));
+    let (posts, calls) =
+        process_instruction(pre.clone(), Instruction::CollectFees, CURVE_PROGRAM_ID);
+    lee_core::program::validate_execution(&pre, &posts, CURVE_PROGRAM_ID).unwrap();
+    let after = PoolAccount::try_from(&posts[0].account().data).unwrap();
+    let mut expected = state.clone();
+    expected.pool.fees_accrued = 0;
+    expected.pool.fees_collected = 7;
+    assert_eq!(
+        after, expected,
+        "collection leaves pricing, reserves and lifecycle unchanged"
+    );
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].pre_states[2].account_id, pre[3].account_id);
+    let instruction: AtaInstruction =
+        risc0_zkvm::serde::from_slice(&calls[0].instruction_data).unwrap();
+    assert!(matches!(
+        instruction,
+        AtaInstruction::Transfer { amount: 7, .. }
+    ));
+    let mut replay = pre.clone();
+    replay[0].account = posts[0].account().clone();
+    replay[2] = holding_ata(pool.account_id, collateral, state.pool.real_reserve1 + 11);
+    replay[3] = holding_ata(treasury, collateral, 7);
+    let (_, calls) = process_instruction(replay, Instruction::CollectFees, CURVE_PROGRAM_ID);
+    assert!(
+        calls.is_empty(),
+        "collection is idempotent; donations are not fees"
+    );
+    for (index, replacement) in [
+        (1, namespace_config(AccountId::new([52; 32]), 999, treasury)),
+        (3, holding_ata(new_treasury(), collateral, 0)),
+        (
+            2,
+            holding_ata(pool.account_id, collateral, state.pool.real_reserve1 + 6),
+        ),
+        (
+            2,
+            holding_ata(
+                namespace_pool(AccountId::new([52; 32])).account_id,
+                collateral,
+                1000,
+            ),
+        ),
+    ] {
+        let mut invalid = pre.clone();
+        invalid[index] = replacement;
+        assert!(
+            std::panic::catch_unwind(|| process_instruction(
+                invalid,
+                Instruction::CollectFees,
+                CURVE_PROGRAM_ID
+            ))
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn accrued_fees_cannot_back_a_sell_or_withdrawal() {
+    let namespace = AccountId::new([51; 32]);
+    let mut pool = namespace_pool(namespace);
+    let mut state = PoolAccount::try_from(&pool.account.data).unwrap();
+    state.pool.real_reserve1 = 0;
+    state.pool.fees_accrued = 100;
+    pool.account.data = Data::from(&state);
+    assert!(
+        std::panic::catch_unwind(|| swap_exact_input(
+            pool,
+            namespace_config(namespace, 100, new_treasury()),
+            None,
+            250,
+            1,
+            state.token0_definition_id,
+            CURVE_PROGRAM_ID
+        ))
+        .is_err()
     );
 }

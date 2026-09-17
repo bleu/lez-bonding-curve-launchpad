@@ -82,7 +82,6 @@ pub enum Instruction {
     /// - Pool input ATA
     /// - Pool output ATA
     /// - Participant output ATA
-    /// - Treasury input ATA
     /// - Trusted LEZ clock
     SwapExactInput {
         amount_in: u128,
@@ -99,8 +98,12 @@ pub enum Instruction {
     ActivatePool,
     /// Owner-only logical closure.
     ClosePool,
-    /// Owner-only full withdrawal after manual closure or expiry.
+    /// Owner-only full withdrawal after manual closure or expiry, collecting fees atomically.
+    /// Accounts: pool, owner, owner ATA0/ATA1, pool ATA0/ATA1, clock, config, treasury ATA1.
+    /// Omit the last account when it aliases owner ATA1 (LEZ requires unique IDs).
     WithdrawReserves,
+    /// Permissionless collection: pool, namespace config, pool token1 ATA, treasury token1 ATA.
+    CollectFees,
 }
 
 /// Wire-level side selection for optional depletion closure.

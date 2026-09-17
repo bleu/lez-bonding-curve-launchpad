@@ -859,6 +859,19 @@ pub fn close_factory_pool(
     )
 }
 
+// The trailing treasury ATA can alias an existing recipient. Curve withdrawal
+// accepts its omission when it is the owner token1 recipient.
+fn unique_treasury_accounts(mut accounts: Vec<AccountWithMetadata>) -> Vec<AccountWithMetadata> {
+    let last = accounts.last().expect("withdrawal accounts").account_id;
+    if accounts[..accounts.len() - 1]
+        .iter()
+        .any(|a| a.account_id == last)
+    {
+        accounts.pop();
+    }
+    accounts
+}
+
 /// Withdraws the closed pool, burns unsold token0, then returns R and all collateral to creator.
 #[must_use]
 #[expect(clippy::too_many_arguments, reason = "fixed public lifecycle accounts")]
@@ -875,6 +888,8 @@ pub fn withdraw_factory_proceeds(
     creator_token_ata: AccountWithMetadata,
     creator_collateral_ata: AccountWithMetadata,
     clock: AccountWithMetadata,
+    config: AccountWithMetadata,
+    treasury_ata: AccountWithMetadata,
     factory_program_id: ProgramId,
 ) -> (Vec<AccountPostState>, Vec<ChainedCall>) {
     let pre = vec![
@@ -890,6 +905,8 @@ pub fn withdraw_factory_proceeds(
         creator_token_ata.clone(),
         creator_collateral_ata.clone(),
         clock.clone(),
+        config.clone(),
+        treasury_ata.clone(),
     ];
     let mut state = FactoryState::try_from(&factory.account.data).expect("valid factory state");
     validate_creator(&factory, &creator, &state, factory_program_id);
@@ -981,7 +998,7 @@ pub fn withdraw_factory_proceeds(
         SettlementStage::Ready => vec![
             ChainedCall::new(
                 state.curve_program_id,
-                vec![
+                unique_treasury_accounts(vec![
                     pool,
                     owner,
                     factory_token_ata,
@@ -989,7 +1006,9 @@ pub fn withdraw_factory_proceeds(
                     pool_token_ata,
                     pool_collateral_ata,
                     clock,
-                ],
+                    config,
+                    treasury_ata,
+                ]),
                 &CurveInstruction::WithdrawReserves,
             )
             .with_pda_seeds(seeds),
@@ -1092,7 +1111,7 @@ pub fn process_instruction(
         instruction => (false, instruction),
     };
     let original = pre_states.clone();
-    let (posts, mut calls) = match instruction {
+    let (mut posts, mut calls) = match instruction {
         Instruction::Private { .. } => panic!("nested execution mode wrapper"),
         Instruction::CreateFactoryPool {
             namespace,
@@ -1187,6 +1206,30 @@ pub fn process_instruction(
             close_factory_pool(factory, pool, creator, clock, factory_program_id)
         }
         Instruction::WithdrawFactoryProceeds => {
+            let mut pre_states = pre_states;
+            if pre_states.len() == 13 {
+                let state =
+                    FactoryState::try_from(&pre_states[0].account.data).expect("valid factory");
+                let config = curve_core::pool_swap::validated_config(
+                    &pre_states[12],
+                    state.namespace,
+                    state.curve_program_id,
+                );
+                let treasury_id = associated_token_account_core::get_associated_token_account_id(
+                    &ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID,
+                    &associated_token_account_core::compute_ata_seed(
+                        config.treasury,
+                        state.collateral_definition_id,
+                    ),
+                );
+                let existing = pre_states
+                    .iter()
+                    .find(|a| a.account_id == treasury_id)
+                    .expect("omitted treasury ATA must already be supplied")
+                    .clone();
+                pre_states.push(existing);
+            }
+
             let [
                 factory,
                 pool,
@@ -1200,9 +1243,11 @@ pub fn process_instruction(
                 creator_token_ata,
                 creator_collateral_ata,
                 clock,
+                config,
+                treasury_ata,
             ] = pre_states
                 .try_into()
-                .expect("WithdrawFactoryProceeds requires exactly twelve accounts");
+                .expect("WithdrawFactoryProceeds requires exactly fourteen accounts");
             withdraw_factory_proceeds(
                 factory,
                 pool,
@@ -1216,10 +1261,13 @@ pub fn process_instruction(
                 creator_token_ata,
                 creator_collateral_ata,
                 clock,
+                config,
+                treasury_ata,
                 factory_program_id,
             )
         }
     };
+    posts.truncate(original.len());
     if private {
         for call in &mut calls {
             if call.program_id != ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID
@@ -1941,6 +1989,8 @@ mod tests {
             creator_token,
             creator_collateral,
             trusted_clock(1),
+            creator(7, false),
+            creator(8, false),
             FACTORY_PROGRAM_ID,
         );
         assert_eq!(

@@ -71,6 +71,7 @@ pub mod factory {
     ) {}
 
     #[instruction]
+    /// Omit trailing treasury_collateral_ata when already present in this account list.
     pub fn withdraw_factory_proceeds(
         #[account(mut)] factory: AccountWithMetadata,
         #[account(mut)] pool: AccountWithMetadata,
@@ -84,5 +85,7 @@ pub mod factory {
         #[account(mut)] creator_token_ata: AccountWithMetadata,
         #[account(mut)] creator_collateral_ata: AccountWithMetadata,
         clock: AccountWithMetadata,
+        config: AccountWithMetadata,
+        #[account(mut)] treasury_collateral_ata: AccountWithMetadata,
     ) {}
 }

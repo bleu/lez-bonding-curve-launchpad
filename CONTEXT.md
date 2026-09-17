@@ -15,7 +15,10 @@ The curve program is a neutral bounded AMM. A token launch is a factory policy l
 - Exact-input swap — spends gross `amountIn` and requires at least `minAmountOut`.
 - Exact-output swap — receives `amountOut` and spends at most fee-inclusive `maxAmountIn`.
 - `tokenIn` — the input token definition ID. Token0 input yields token1; token1 input yields token0.
-- Protocol fee — charged in token1 (collateral for factory launches), deducted from buy input or raw sell output and routed to the namespace treasury. No fee stays in the pool.
+- Protocol fee — charged in token1 (collateral for factory launches), deducted from buy input or raw sell output and accrued separately from reserves in the pool vault.
+- Accrued fees — uncollected protocol fees; they never back swap output or creator proceeds.
+- Fee collection — permissionless transfer of accrued fees to the current namespace treasury, available at any time and included atomically in reserve withdrawal.
+- Collected fees — cumulative protocol fees already paid to treasury, reported separately from reserves and uncollected fees.
 - Authority NFT — a unique transferable NFT master granting a role. Its token definition is the stable role identity; its current holding account proves control.
 - Owner — the authority allowed to close and withdraw. A direct pool uses an authority NFT; a factory-created pool remains under factory program custody.
 - Close timestamp — optional trusted LEZ chain time at which swaps stop. Expiry is logical closure and needs no separate close transaction.

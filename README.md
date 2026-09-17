@@ -57,9 +57,9 @@ Nix is not required. Scaffold needs it only for `lgs basecamp`, which is outside
 
 At creation, [`Pool::create`](crates/pool/src/lib.rs) rejects zero virtual reserves and either virtual reserve at or above `2^64`. Thus the immutable creation-time `k = V0 × V1` is strictly below `2^128` and fits `u128`. Trades use that stored `k` for every quote, while reserve additions/subtractions and all quote arithmetic remain checked. A trade that would overflow or leave its real output reserve rejects before state mutation. The complete argument is in [ADR 0004](docs/adr/0004-u128-bounds-for-the-curve-arithmetic.md).
 
-Quotes use the immutable creation-time `k`, as RFP-015 specifies. Exact-input output uses ceiling division internally so the payout rounds down; exact-output pricing rounds required input up. The only fee is the protocol fee, rounded up and always settled in collateral: it is deducted from collateral input on buys and from raw collateral output on sells. The pool receives no retained fee. See [`curve-math`](crates/curve-math/src/lib.rs), [`pool`](crates/pool/src/lib.rs), and [ADR 0005](docs/adr/0005-dual-input-fees-and-monotonic-reserve-product.md).
+Quotes use the immutable creation-time `k`, as RFP-015 specifies. Exact-input output uses ceiling division internally so the payout rounds down; exact-output pricing rounds required input up. The only fee is the protocol fee, rounded up and always accrued in collateral: it is deducted from collateral input on buys and from raw collateral output on sells. Fees stay in the collateral vault but are excluded from pricing and real reserves. Permissionless collection pays the current namespace treasury; withdrawal collects any remainder atomically. See [`curve-math`](crates/curve-math/src/lib.rs), [`pool`](crates/pool/src/lib.rs), and [ADR 0005](docs/adr/0005-dual-input-fees-and-monotonic-reserve-product.md).
 
-The executable property suite in [`crates/pool/tests/proptest_invariants.rs`](crates/pool/tests/proptest_invariants.rs) generates 512 randomized sequences of up to 128 exact-input/exact-output swaps, close attempts, and withdrawals across both token directions, boundary amounts, and valid/invalid fee combinations. It asserts successful swaps conserve the modeled real reserves, never pay beyond the selected real output reserve, and retain the immutable pricing `k`; rejected actions leave state unchanged. It is a pure state-machine test—not a proof of LEZ account/ATA wiring, concurrent sequencer execution, private-flow behavior, or a mathematical proof over all inputs. Adapter tests in [`curve-core`](crates/curve-core/src/tests.rs) cover the account, authorization, and custody boundary.
+The executable property suite in [`crates/pool/tests/proptest_invariants.rs`](crates/pool/tests/proptest_invariants.rs) generates 512 randomized sequences of up to 128 exact-input/exact-output swaps, fee collection, close attempts, and withdrawals across both token directions, boundary amounts, and valid/invalid fee combinations. It asserts successful swaps conserve the modeled real reserves, never pay beyond the selected real output reserve, and retain the immutable pricing `k`; rejected actions leave state unchanged. It is a pure state-machine test—not a proof of LEZ account/ATA wiring, concurrent sequencer execution, private-flow behavior, or a mathematical proof over all inputs. Adapter tests in [`curve-core`](crates/curve-core/src/tests.rs) cover the account, authorization, and custody boundary.
 
 ### What “sold back never exceeds bought” means here
 
@@ -233,3 +233,37 @@ Dual licensed under either of
 - MIT license ([LICENSE-MIT](LICENSE-MIT))
 
 at your option. This is the licensing the proposal promises.
+
+## Accrued fees and collection
+
+Following [RFP PR 204](https://github.com/logos-co/rfp/pull/204), swaps accrue the
+collateral fee without accessing a treasury account. `fees_accrued` records the
+uncollected amount and `fees_collected` records cumulative treasury payouts. Both
+appear in `status` / `sale-info`, separately from the real collateral reserve.
+Neither fee counter is inferred from token balances; donations do not create fees.
+The vault must cover the real collateral reserve plus accrued fees at all times.
+
+Anyone can collect from an open or closed pool, without its creator or admin:
+
+```bash
+launchpad --namespace Public/<authority-definition> collect-fees \
+  --curve-program-path <curve.bin> \
+  --collateral-definition Public/<collateral-definition> \
+  --pool Public/<pool-a> Public/<pool-b>
+```
+
+The SDK exposes `build_collect_fees_invocation` and `collect_pool_fees`. The CLI
+collects the supplied pools sequentially within one namespace and collateral mint;
+SDK batches can include different collateral mints. These are independently atomic
+transactions, safe to retry after partial completion. The SDK initializes a missing
+treasury ATA before collection. Repeating a collection transfers zero. The current
+treasury receives even fees accrued before a treasury update; a stale destination
+is rejected. Rate updates apply only to subsequent swaps, with existing slippage
+bounds protecting traders.
+
+Public reserve withdrawal collects outstanding fees atomically and pays only the
+real reserves to the owner. Private factory withdrawal first collects publicly from
+the closed pool to fit the private execution budget, then resumes its five stages.
+Collection amounts and fee counters are public. There is no extra withdrawal fee.
+Namespace-wide discovery, aggregated analytics and the mini-app remain outside this
+PoC; the collection batch accepts explicit pool IDs.

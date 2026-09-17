@@ -19,6 +19,7 @@ enum Action {
     },
     Close,
     Withdraw,
+    Collect,
 }
 
 fn checked_add(left: u128, right: u128) -> u128 {
@@ -41,7 +42,7 @@ fn amount_strategy() -> impl Strategy<Value = u128> {
 
 fn fee_strategy() -> impl Strategy<Value = (u16, u16)> {
     prop_oneof![
-        8 => (0_u16..=1_000, 0_u16..=1_000),
+        8 => (Just(0_u16), 0_u16..=1_000),
         2 => prop::sample::select(vec![
             (0, 0),
             (10_000, 0),
@@ -82,6 +83,7 @@ fn action_strategy() -> impl Strategy<Value = Action> {
         ),
         1 => Just(Action::Close),
         1 => Just(Action::Withdraw),
+        3 => Just(Action::Collect),
     ]
 }
 
@@ -134,6 +136,18 @@ fn assert_successful_swap(before: &Pool, after: &Pool, side: TokenSide, outcome:
     let (old_virtual_in, old_virtual_out, old_real_in, old_real_out) = reserves(before, side);
     let (new_virtual_in, new_virtual_out, new_real_in, new_real_out) = reserves(after, side);
     assert!(outcome.amount_in > 0);
+    assert_eq!(
+        after.fees_accrued,
+        checked_add(before.fees_accrued, outcome.protocol_fee)
+    );
+    assert_eq!(after.fees_collected, before.fees_collected);
+    let old_vault = checked_add(before.real_reserve1, before.fees_accrued);
+    let new_vault = checked_add(after.real_reserve1, after.fees_accrued);
+    if side == TokenSide::Token1 {
+        assert_eq!(new_vault, checked_add(old_vault, outcome.amount_in));
+    } else {
+        assert_eq!(checked_add(new_vault, outcome.amount_out), old_vault);
+    }
     if outcome.protocol_fee_on_output {
         assert_eq!(outcome.amount_in, outcome.effective_amount_in);
         assert_eq!(
@@ -198,6 +212,22 @@ fn manual_close_and_withdraw_are_permanent_and_post_close_swaps_fail_atomically(
     assert_eq!(pool, retired);
 }
 
+#[test]
+fn fee_counter_overflow_rejects_both_buy_forms_without_mutation() {
+    for exact_output in [false, true] {
+        let mut pool = Pool::create(800, 100, 1000, 100, None, None).unwrap();
+        pool.fees_collected = u128::MAX;
+        let before = pool.clone();
+        let result = if exact_output {
+            pool.swap_exact_output(TokenSide::Token1, 200, 100, 0, 100, 0)
+        } else {
+            pool.swap_exact_input(TokenSide::Token1, 100, 0, 0, 100, 0)
+        };
+        assert_eq!(result, Err(pool::SwapError::Arithmetic));
+        assert_eq!(pool, before);
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(512))]
 
@@ -248,6 +278,17 @@ proptest! {
                     }
                     Err(_) => prop_assert_eq!(&pool, &before),
                 },
+                Action::Collect => {
+                    let amount = pool.collect_fees().unwrap();
+                    prop_assert_eq!(amount, before.fees_accrued);
+                    prop_assert_eq!(pool.fees_accrued, 0);
+                    prop_assert_eq!(pool.fees_collected, checked_add(before.fees_collected, amount));
+                    let mut expected = before.clone();
+                    expected.fees_accrued = 0;
+                    expected.fees_collected = checked_add(expected.fees_collected, amount);
+                    prop_assert_eq!(&pool, &expected);
+                    prop_assert_eq!(pool.collect_fees().unwrap(), 0);
+                }
                 Action::Close => {
                     let _ = pool.close_pool(0);
                     prop_assert_ne!(pool.lifecycle, PoolLifecycle::Open);

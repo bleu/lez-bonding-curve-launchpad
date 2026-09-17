@@ -182,7 +182,7 @@ impl Chain {
 }
 #[test]
 #[ignore = "build methods and set RISC0_DEV_MODE=1"]
-fn fee_transfers_use_current_balances_in_both_directions() {
+fn fee_accrual_collection_and_withdrawal_preserve_vault_liabilities() {
     for public_mode in [false, true] {
         for sell in [false, true] {
             let mut chain = Chain::new();
@@ -254,7 +254,6 @@ fn fee_transfers_use_current_balances_in_both_directions() {
                     ata(pool_id, input),
                     ata(pool_id, output),
                     ata(trader, output),
-                    ata(treasury, token1),
                     clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID,
                 ],
                 signer_accounts: vec![trader],
@@ -275,14 +274,109 @@ fn fee_transfers_use_current_balances_in_both_directions() {
             if sell {
                 assert_eq!(chain.balance(ata(trader, token0)), 750);
                 assert_eq!(chain.balance(ata(trader, token1)), 1019);
-                assert_eq!(chain.balance(ata(treasury, token1)), 1);
-                assert_eq!(chain.balance(ata(pool_id, token1)), 80);
+                assert_eq!(chain.balance(ata(treasury, token1)), 0);
+                assert_eq!(chain.balance(ata(pool_id, token1)), 81);
             } else {
                 assert_eq!(chain.balance(ata(trader, token0)), 1200);
                 assert_eq!(chain.balance(ata(trader, token1)), 972);
-                assert_eq!(chain.balance(ata(treasury, token1)), 3);
-                assert_eq!(chain.balance(ata(pool_id, token1)), 125);
+                assert_eq!(chain.balance(ata(treasury, token1)), 0);
+                assert_eq!(chain.balance(ata(pool_id, token1)), 128);
             }
+            let fee = if sell { 1 } else { 3 };
+            let after_swap =
+                curve_core::PoolAccount::try_from(&chain.accounts[&pool_id].data).unwrap();
+            assert_eq!(after_swap.pool.fees_accrued, fee);
+            // Rotate the namespace treasury after accrual, then collect without a signer.
+            let next_treasury = if sell { id(7) } else { id(20) };
+            let mut config =
+                curve_core::Config::try_from(&chain.accounts[&config_id].data).unwrap();
+            config.treasury = next_treasury;
+            chain.accounts.get_mut(&config_id).unwrap().data = Data::from(&config);
+            chain
+                .accounts
+                .insert(ata(next_treasury, token1), holding(token1, 0));
+            if sell {
+                for _ in 0..2 {
+                    chain.run(launchpad_client::build_collect_fees_invocation(
+                        namespace,
+                        chain.curve.id(),
+                        pool_id,
+                        token1,
+                        next_treasury,
+                    ));
+                }
+                assert_eq!(chain.balance(ata(next_treasury, token1)), fee);
+            }
+            // Close the fixture and withdraw: buy fees are collected here, sell fees
+            // were collected already. Both routes must pay exactly the principal.
+            let mut state =
+                curve_core::PoolAccount::try_from(&chain.accounts[&pool_id].data).unwrap();
+            state.pool.close_pool(1).unwrap();
+            let principal = state.pool.real_reserve1;
+            // Instead of changing the pool's address/owner, provide its NFT master.
+            let holder = id(20);
+            chain.accounts.insert(
+                holder,
+                Account {
+                    program_owner: programs::token().id(),
+                    data: Data::from(&TokenHolding::NftMaster {
+                        definition_id: owner,
+                        print_balance: 1,
+                    }),
+                    ..Account::default()
+                },
+            );
+            chain.accounts.get_mut(&pool_id).unwrap().data = Data::from(&state);
+            for definition in [token0, token1] {
+                chain
+                    .accounts
+                    .insert(ata(holder, definition), holding(definition, 0));
+            }
+            let mut withdrawal = launchpad_client::PublicInvocation {
+                program_id: chain.curve.id(),
+                account_ids: vec![
+                    pool_id,
+                    holder,
+                    ata(holder, token0),
+                    ata(holder, token1),
+                    ata(pool_id, token0),
+                    ata(pool_id, token1),
+                    clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID,
+                    config_id,
+                    ata(next_treasury, token1),
+                ],
+                signer_accounts: vec![holder],
+                instruction: curve_core::Instruction::WithdrawReserves,
+            };
+            if next_treasury == holder {
+                withdrawal.account_ids.pop();
+            }
+            chain.run(withdrawal);
+            assert_eq!(
+                chain.balance(ata(holder, token1)),
+                principal + if sell { 0 } else { fee }
+            );
+            assert_eq!(
+                chain.balance(ata(next_treasury, token1)),
+                fee + if sell { 0 } else { principal }
+            );
+            assert_eq!(chain.balance(ata(treasury, token1)), 0);
+            assert_eq!(chain.balance(ata(pool_id, token1)), 0);
+            let final_state =
+                curve_core::PoolAccount::try_from(&chain.accounts[&pool_id].data).unwrap();
+            assert_eq!(final_state.pool.fees_accrued, 0);
+            assert_eq!(final_state.pool.fees_collected, fee);
+            chain.run(launchpad_client::build_collect_fees_invocation(
+                namespace,
+                chain.curve.id(),
+                pool_id,
+                token1,
+                next_treasury,
+            ));
+            assert_eq!(
+                chain.balance(ata(next_treasury, token1)),
+                fee + if sell { 0 } else { principal }
+            );
         }
     }
 }
@@ -577,7 +671,6 @@ fn private_sale_resumes_creation_and_settlement_with_fresh_payout_holders() {
                     chain.factory.id(),
                     chain.curve.id(),
                     trader,
-                    id(6),
                     launchpad_client::BuyRequest {
                         launch_salt: salt,
                         collateral_definition: collateral,
@@ -622,6 +715,7 @@ fn private_sale_resumes_creation_and_settlement_with_fresh_payout_holders() {
                         id(106 + step),
                         salt,
                         collateral,
+                        id(6),
                     ),
                 );
             }
@@ -656,7 +750,8 @@ fn private_sale_resumes_creation_and_settlement_with_fresh_payout_holders() {
                                 chain.curve.id(),
                                 id(111),
                                 salt,
-                                collateral
+                                collateral,
+                                id(6),
                             )
                         )
                         .is_err()

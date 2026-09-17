@@ -58,7 +58,6 @@ pub mod curve {
         #[account(mut)] pool_token_in_ata: AccountWithMetadata,
         #[account(mut)] pool_token_out_ata: AccountWithMetadata,
         #[account(mut)] participant_token_out_ata: AccountWithMetadata,
-        #[account(mut)] treasury_collateral_ata: AccountWithMetadata,
         clock: AccountWithMetadata,
         amount_in: u128,
         min_amount_out: u128,
@@ -74,7 +73,6 @@ pub mod curve {
         #[account(mut)] pool_collateral_ata: AccountWithMetadata,
         #[account(mut)] pool_token_ata: AccountWithMetadata,
         #[account(mut)] participant_token_ata: AccountWithMetadata,
-        #[account(mut)] treasury_collateral_ata: AccountWithMetadata,
         clock: AccountWithMetadata,
         amount_out: u128,
         max_amount_in: u128,
@@ -103,6 +101,7 @@ pub mod curve {
     ) {}
 
     #[instruction]
+    /// Omit trailing treasury_collateral_ata when it is owner_token1_ata.
     pub fn withdraw_reserves(
         #[account(mut)] pool: AccountWithMetadata,
         #[account(signer)] owner: AccountWithMetadata,
@@ -111,5 +110,14 @@ pub mod curve {
         #[account(mut)] pool_token0_ata: AccountWithMetadata,
         #[account(mut)] pool_token1_ata: AccountWithMetadata,
         clock: AccountWithMetadata,
+        config: AccountWithMetadata,
+        #[account(mut)] treasury_collateral_ata: AccountWithMetadata,
+    ) {}
+    #[instruction]
+    pub fn collect_fees(
+        #[account(mut)] pool: AccountWithMetadata,
+        config: AccountWithMetadata,
+        #[account(mut)] pool_collateral_ata: AccountWithMetadata,
+        #[account(mut)] treasury_collateral_ata: AccountWithMetadata,
     ) {}
 }

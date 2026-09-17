@@ -79,6 +79,10 @@ factory/creator balances, prepare the pool and reserve ATAs, then fund and activ
 it. Pending pools reject swaps, close, and reserve withdrawal. The original deadline
 is never extended: late activation creates a closed pool that can still settle.
 
+Before private proceeds settlement withdraws reserves, the SDK permissionlessly
+collects any accrued fees from the closed pool in a public transaction (ADR 0005).
+Public reserve withdrawal collects outstanding fees atomically.
+
 Proceeds settlement advances five confirmed stages: prepare the factory collateral
 ATA, withdraw the pool reserves, burn the captured unsold amount, pay the exact `R`
 allocation, and pay the captured collateral. Payout stages initialize the current

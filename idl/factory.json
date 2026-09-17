@@ -430,6 +430,18 @@
           "writable": false,
           "signer": false,
           "init": false
+        },
+        {
+          "name": "config",
+          "writable": false,
+          "signer": false,
+          "init": false
+        },
+        {
+          "name": "treasury_collateral_ata",
+          "writable": true,
+          "signer": false,
+          "init": false
         }
       ],
       "args": []
