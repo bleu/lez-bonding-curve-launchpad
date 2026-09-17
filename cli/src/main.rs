@@ -64,7 +64,7 @@ struct Cli {
     /// Emit stable machine-readable output.
     #[arg(long, global = true)]
     json: bool,
-    /// Namespace identity (the public key that authorized its creation).
+    /// Namespace identity (the authority NFT definition ID used at initialization).
     #[arg(long, global = true)]
     namespace: Option<String>,
     /// Router guest for using a Private/ NFT holder with any role operation.
@@ -413,7 +413,7 @@ async fn run(json: bool, cli: Cli) -> Result<()> {
     }
     let router = cli.authority_router_path.as_deref();
     let namespace = parse_account_id(cli.namespace.as_deref().ok_or_else(|| {
-        anyhow::anyhow!("--namespace is required; use the namespace creator public key")
+        anyhow::anyhow!("--namespace is required; use the authority NFT definition ID used to initialize the namespace")
     })?)?;
     match cli.command {
         Command::CreateSale(args) => create_sale(namespace, json, args, router).await,

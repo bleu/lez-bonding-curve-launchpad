@@ -1,8 +1,8 @@
 //! Launch policy layered over the neutral curve pool.
 //!
 //! The factory creates one fixed-supply launch token, records the public split, and
-//! atomically tail-calls the curve's neutral `CreatePool` instruction.  The factory
-//! owns the token-definition PDA and intentionally exposes no mint or metadata-update
+//! prepares and funds the curve pool across four resumable, individually atomic stages.
+//! The factory owns the token-definition PDA and exposes no mint or metadata-update
 //! instruction: this is the authority-revocation boundary for the pinned token API.
 
 use borsh::{BorshDeserialize, BorshSerialize};

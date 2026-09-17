@@ -24,7 +24,7 @@ Prerequisites are Rust (the pinned toolchain in `rust-toolchain.toml`), `jq`, an
 cargo install --git https://github.com/logos-co/scaffold --tag v0.3.0 --locked --bins
 ```
 
-Before a walkthrough, create or identify a public wallet account with `lgs wallet -- account new public`. That account authorizes namespace creation; no key is compiled into the program. Run:
+The walkthrough resets the project wallet and creates its own authority NFT to initialize the namespace. No account setup is required beforehand. Run:
 
 ```bash
 ./verify/e2e.sh
@@ -107,7 +107,7 @@ this PoC or explicitly deferred.
 
 RFP-015 still names [LP-0013 token authorities](https://github.com/logos-co/lambda-prize/blob/master/prizes/LP-0013.md) as an open hard blocker. Code structure is not evidence that the runtime authority primitive is compatible. The canonical walkthrough is designed to provide practical evidence: it deploys these programs and exercises custody transfers on a LEZ sequencer. Until that walkthrough has succeeded against the intended sequencer/pin, LP-0013 compatibility remains an open blocker.
 
-General cross-program calls are exercised by the factory/curve flow. The RFP-001 admin-authority library is not built here: [`Config`](crates/curve-core/src/lib.rs) is the seam, and rotating its stored admin to an RFP-001-controlled key needs no redeploy ([ADR 0003](docs/adr/0003-admin-config-and-the-rfp-001-seam.md)). RFP-004 is likewise not integrated; automatic DEX graduation is future work, and the factory currently settles DEX-seed tokens under its post-close policy ([ADR 0007](docs/adr/0007-factory-closure-and-creator-settlement.md)).
+General cross-program calls are exercised by the factory/curve flow. The RFP-001 admin-authority library is not built here: [`Config`](crates/curve-core/src/lib.rs) is the integration seam, but its admin identifies an authority NFT definition. Future integration must satisfy the NFT-holding authorization check or change the program; rotating to a library-controlled public key alone does not grant authority ([ADR 0008](docs/adr/0008-permissionless-namespaces.md)). RFP-004 is likewise not integrated; automatic DEX graduation is future work, and the factory currently settles DEX-seed tokens under its post-close policy ([ADR 0007](docs/adr/0007-factory-closure-and-creator-settlement.md)).
 
 ## Scope limits
 
